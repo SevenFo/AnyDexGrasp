@@ -11,7 +11,7 @@ import math
 from tqdm import tqdm
 import sys
 from angles2stl import InspireAngles2STLs
-from ur_toolbox.robot.InspireHandR_grasp import grasp_types
+from ur_toolbox.robot.Inspire.InspireHandR_grasp import grasp_types
 joint_mesh_mapping = {"base": "Link111.STL",
                       "0": "Link1.STL",
                       "1": "Link11.STL",
