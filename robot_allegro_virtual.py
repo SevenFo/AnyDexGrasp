@@ -23,12 +23,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
 sys.path.append(os.path.join(ROOT_DIR, 'dataset'))
-sys.path.append(os.path.join(ROOT_DIR, 'utils'))
+sys.path.append(os.path.join(ROOT_DIR, 'adg_utils'))
 from ur_toolbox.robot import UR_Camera_Gripper
 from ur_toolbox.robot.Allegro.Allegro_grasp import AllegroGraspGroup, grasp_types
-from utils.np_utils import transform_point_cloud
-from utils.pt_utils import batch_viewpoint_params_to_matrix
-from utils.collision_detector import ModelFreeCollisionDetectorMultifinger
+from adg_utils.np_utils import transform_point_cloud
+from adg_utils.pt_utils import batch_viewpoint_params_to_matrix
+from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 import queue
 from itertools import count
 from threading import Thread

@@ -4,9 +4,9 @@ import MinkowskiEngine as ME
 from MinkowskiEngine import MinkowskiReLU
 import MinkowskiEngine.MinkowskiOps as me
 
-from resnet import ResNetBase, get_norm
-from common import ConvType, NormType, conv, conv_tr
-from resnet_block import BasicBlock
+from models.resnet import ResNetBase, get_norm
+from models.common import ConvType, NormType, conv, conv_tr
+from models.resnet_block import BasicBlock
 
 
 class Res4UNetBase(ResNetBase):

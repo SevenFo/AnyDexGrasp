@@ -5,12 +5,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'knn'))
-sys.path.append(os.path.join(ROOT_DIR, 'utils'))
-from knn_modules import knn
-from pt_utils import huber_loss, focal_loss, transform_point_cloud, batch_viewpoint_params_to_matrix, generate_grasp_views
+from knn.knn_modules import knn
+from adg_utils.pt_utils import huber_loss, focal_loss, transform_point_cloud, batch_viewpoint_params_to_matrix, generate_grasp_views # noqa: F401
 
 MAX_GRASP_WIDTH = 0.08
 MAX_MU = 1.0

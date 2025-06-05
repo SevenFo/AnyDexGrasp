@@ -3,8 +3,8 @@ import torch.nn as nn
 import MinkowskiEngine as ME
 from MinkowskiEngine import MinkowskiNetwork
 
-from common import ConvType, NormType, get_norm, conv, sum_pool
-from resnet_block import BasicBlock, Bottleneck
+from models.common import ConvType, NormType, get_norm, conv, sum_pool
+from models.resnet_block import BasicBlock, Bottleneck
 
 
 class ResNetBase(MinkowskiNetwork):

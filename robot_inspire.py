@@ -13,7 +13,7 @@ import open3d as o3d
 import MinkowskiEngine as ME
 from graspnetAPI import GraspGroup
 from ur_toolbox.robot import UR_Camera_Gripper
-from ur_toolbox.robot.InspireHandR_grasp import InspireHandRGraspGroup, grasp_types
+from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup, grasp_types
 from multiprocessing import shared_memory
 from collections import OrderedDict
 import matplotlib.pyplot as plt

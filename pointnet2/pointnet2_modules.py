@@ -9,18 +9,14 @@ Extended with the following:
 1. Uniform sampling in each local region (sample_uniformly)
 2. Return sampled points indices to support votenet.
 '''
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import os
-import sys
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(BASE_DIR)
-
-import pointnet2_utils
-import pytorch_utils as pt_utils
-from typing import List
+from pointnet2 import pointnet2_utils
+from pointnet2 import pytorch_utils as pt_utils
 
 
 class _PointnetSAModuleBase(nn.Module):

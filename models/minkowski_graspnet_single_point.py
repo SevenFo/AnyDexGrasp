@@ -4,18 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import MinkowskiEngine as ME
+from models.resunet import ResUNet14
+from models.res4unet import Res4UNet14
+from models.loss import process_grasp_labels, match_grasp_view_and_label
 
-from resunet import ResUNet14
-from res4unet import Res4UNet14
-from loss import process_grasp_labels, match_grasp_view_and_label
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'pointnet2'))
-import pointnet2_utils
-from pytorch_utils import SharedMLP
-from pt_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
+from pointnet2 import pointnet2_utils
+from pointnet2.pytorch_utils import SharedMLP
+from adg_utils.pt_utils import generate_grasp_views, batch_viewpoint_params_to_matrix
 
 class PointCylinderGroup(nn.Module):
     """Point Cylinder Group modules"""

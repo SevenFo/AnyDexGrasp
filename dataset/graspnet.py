@@ -19,9 +19,6 @@ from tqdm import tqdm
 
 import MinkowskiEngine as ME
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'utils'))
 from collision_detector import CollisionType
 from np_utils import transform_point_cloud, remove_invisible_grasp_points,\
     create_point_cloud_from_depth_image, get_workspace_mask

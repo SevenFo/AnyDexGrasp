@@ -18,10 +18,6 @@ if TORCH_MAJOR == 1 and TORCH_MINOR < 8:
 else:
     import collections.abc as container_abcs
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'utils'))
-
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from np_utils import transform_point_cloud, remove_invisible_grasp_points,\
