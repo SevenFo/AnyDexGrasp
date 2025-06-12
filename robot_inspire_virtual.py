@@ -501,7 +501,7 @@ def visualize_grasp_proposals(scene_cloud, gg_array, inspire_gg_array, title="Gr
     }
     
     # Add grasps with color coding by type
-    for i in range(min(20, len(gg_array))):
+    for i in range(min(80, len(gg_array))):
         grasp_type = int(inspire_gg_array.grasp_types[i])
         color = color_map.get(grasp_type, [0.5, 0.5, 0.5])  # Default to gray
         
@@ -603,19 +603,19 @@ def process_and_visualize():
         print('No grasp detected after filter')
         return
     
-    # Sort by score
-    index_score = np.argsort(InspireHandR_ggarray.scores)[::-1]
-    InspireHandR_ggarray = InspireHandR_ggarray[index_score]
-    two_fingers_ggarray = two_fingers_ggarray[index_score]
-    grasp_features = grasp_features[index_score]
-    two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids[index_score]
-    
     # Select by grasp type
     index_type = select_grasp_type(InspireHandR_ggarray)
     InspireHandR_ggarray = InspireHandR_ggarray[index_type]
     two_fingers_ggarray = two_fingers_ggarray[index_type]
     grasp_features = grasp_features[index_type]
     two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids[index_type]
+    
+    # Sort by score
+    index_score = np.argsort(InspireHandR_ggarray.scores)[::-1]
+    InspireHandR_ggarray = InspireHandR_ggarray[index_score]
+    two_fingers_ggarray = two_fingers_ggarray[index_score]
+    grasp_features = grasp_features[index_score]
+    two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids[index_score]
     
     # Collision detection
     approach_distance = 0.06
@@ -636,20 +636,23 @@ def process_and_visualize():
         return
     
     # Sort post-collision grasps
-    index_score_post = np.argsort(InspireHandR_ggarray_post.scores)[::-1][:10]
+    index_score_post = np.argsort(InspireHandR_ggarray_post.scores)[::-1][:80]
     InspireHandR_ggarray_post = InspireHandR_ggarray_post[index_score_post]
     two_fingers_ggarray_post = two_fingers_ggarray_post[index_score_post]
     
     # Visualize results
     print("Visualizing pre-collision grasps...")
+    # index_score_post = np.argsort(InspireHandR_ggarray.scores)[::-1][:20]
+    # InspireHandR_ggarray = InspireHandR_ggarray[index_score_post]
+    # two_fingers_ggarray = two_fingers_ggarray[index_score_post]
     visualize_grasp_proposals(cloud, two_fingers_ggarray, InspireHandR_ggarray, "Pre-Collision Grasp Proposals")
     
     print("Visualizing post-collision grasps...")
     visualize_grasp_proposals(cloud, two_fingers_ggarray_post, InspireHandR_ggarray_post, "Post-Collision Grasp Proposals")
     
-    print("Visualizing comparison...")
-    visualize_grasps(cloud, two_fingers_ggarray, two_fingers_ggarray_post, 
-                    InspireHandR_ggarray, InspireHandR_ggarray_post)
+    # print("Visualizing comparison...")
+    # visualize_grasps(cloud, two_fingers_ggarray, two_fingers_ggarray_post, 
+    #                 InspireHandR_ggarray, InspireHandR_ggarray_post)
 
 if __name__ == '__main__':
     t0 = time.time()
