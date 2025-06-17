@@ -5,9 +5,9 @@ import numpy as np
 import open3d as o3d
 import MinkowskiEngine as ME
 import os
-from np_utils import transform_point_cloud
-from pt_utils import batch_viewpoint_params_to_matrix
-from collision_detector import ModelFreeCollisionDetectorMultifinger
+from adg_utils.np_utils import transform_point_cloud
+from adg_utils.pt_utils import batch_viewpoint_params_to_matrix
+from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 
 def parse_graspnet_predictions(end_points, max_width, batch_size=1):
     """从GraspNet的输出中解析抓取姿态和特征"""
@@ -127,11 +127,15 @@ def run_graspnet_on_point_cloud(net, points, gripper_config, augment_mat=np.eye(
         # TODO Note: This flip logic is different for different grippers in the original files.
         # This generic version assumes Y and Z axes are flipped for the pose.
         # This may need to be handled in the inference script if logic differs.
+        # pose_rotation[:, :, 1] = -pose_rotation[:, :, 1]
+        # pose_rotation[:, :, 2] = -pose_rotation[:, :, 2]
+        preds[:, 12] = -preds[:, 12]
+        pose_rotation[:, 0, :] = -pose_rotation[:, 0, :]
         pose_rotation[:, :, 1] = -pose_rotation[:, :, 1]
-        pose_rotation[:, :, 2] = -pose_rotation[:, :, 2]
     preds[:, 3:12] = pose_rotation.view(-1, 9)
 
-    # Filter
+    # TODO Filter
+    # different grasper should set different threshold
     score_mask = preds[:, 9] > 0.9  # Use a general high score threshold
     width_mask = (preds[:, 1] < gripper_config['max_width']) & (preds[:, 1] > gripper_config['min_width'])
     ws = gripper_config['workspace_bounds']

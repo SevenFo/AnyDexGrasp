@@ -5,10 +5,10 @@ import numpy as np
 import open3d as o3d
 from graspnetAPI import GraspGroup
 
-from utils.config import GRIPPER_CONFIGS, GRASPNET_CHECKPOINT_PATH, POINTCLOUD_AUGMENT_NUM, USE_GRASPNET_V2, HALF_VIEWS, DEBUG_VISUALIZATION
-from utils.data_processing import get_depth_from_shared_memory, create_point_cloud_from_depth, augment_data
-from utils.model_loader import get_graspnet_model, get_multifinger_model
-from utils.grasp_processing import run_graspnet_on_point_cloud, run_collision_detection
+from inference.utils.config import GRIPPER_CONFIGS, GRASPNET_CHECKPOINT_PATH, POINTCLOUD_AUGMENT_NUM, USE_GRASPNET_V2, HALF_VIEWS, DEBUG_VISUALIZATION
+from inference.utils.data_processing import load_depth_image, create_point_cloud_from_depth, augment_data
+from inference.utils.model_loader import get_graspnet_model, get_multifinger_model
+from inference.utils.grasp_processing import run_graspnet_on_point_cloud, run_collision_detection
 from inference.allegro_inference import AllegroInference
 # from inference.dh3_inference import DH3Inference # <-- 类似地导入
 # from inference.inspire_inference import InspireInference # <-- 类似地导入
@@ -35,7 +35,7 @@ def main(args):
     # 2. 获取和处理点云
     print("Capturing and processing scene...")
     # 假设共享内存已启动并有数据
-    depth = get_depth_from_shared_memory() 
+    depth = load_depth_image("depth_2.png")
     scene_points = create_point_cloud_from_depth(depth, cfg['point_cloud_z_range'])
 
     # 3. 运行GraspNet (带数据增强)
@@ -110,7 +110,7 @@ def main(args):
 
     # 6. 选择最终结果
     # 这里我们简单地选择分数最高的
-    best_grasp_idx = np.argmax(multi_finger_gg_col.scores)
+    best_grasp_idx = np.argmax(multi_finger_gg_col.scores).item()
     final_mf_grasp = multi_finger_gg_col[best_grasp_idx]
     final_tf_grasp = two_finger_gg_col[best_grasp_idx]
     
@@ -135,7 +135,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gripper', type=str, required=True, choices=['allegro', 'dh3', 'inspire'],
+    parser.add_argument('--gripper', type=str, default='allegro', choices=['allegro', 'dh3', 'inspire'],
                         help='Name of the gripper to use for inference.')
     args = parser.parse_args()
     

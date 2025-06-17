@@ -1,9 +1,12 @@
 # utils/model_loader.py
 import os
 import torch
+import sys
 from models.minkowski_graspnet_single_point import MinkowskiGraspNet, MinkowskiGraspNetMultifingerType1Inference
+from models import minkowski_graspnet
+sys.modules['minkowski_graspnet'] = minkowski_graspnet
 
-def get_graspnet_model(checkpoint_path, use_v2=False, half_views=False):
+def get_graspnet_model(checkpoint_path, use_v2=True, half_views=False):
     """加载GraspNet基础模型"""
     num_depth = 5 if use_v2 else 4
     net = MinkowskiGraspNet(num_depth=num_depth, num_seed=2048, is_training=False, half_views=half_views)
@@ -29,14 +32,14 @@ def get_multifinger_model(models_path):
 
             gripper_models[model_type][model_class] = []
             for model_file in os.listdir(model_class_path):
-                if not model_file.endswith('.pt'): continue # 假设模型文件以 .pt 结尾
+                if not model_file.endswith('.pth'): continue # 假设模型文件以 .pt 结尾
                 
                 model_full_path = os.path.join(model_class_path, model_file)
                 model = MinkowskiGraspNetMultifingerType1Inference(input_num=int(model_type))
                 model_state = torch.load(model_full_path)
                 
                 # 兼容不同保存方式
-                if 'state_dict' in model_state:
+                if 'state_dict' in dir(model_state):
                     model.load_state_dict(model_state.state_dict())
                 else:
                     model.load_state_dict(model_state)

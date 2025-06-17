@@ -31,17 +31,24 @@ class AllegroInference(BaseInference):
         all_scores = []
         # Sort models by class ('type_1', 'type_2', etc.)
         sorted_models = OrderedDict(sorted(self.multifinger_models['480'].items(), key=lambda t: t[0]))
-        
+
         for model_class, sub_models in sorted_models.items():
-            class_preds = torch.tensor(0, device=self.device)
-            for model in sub_models:
+            # 初始化class_preds为None
+            class_preds = None
+            
+            for i, model in enumerate(sub_models):
                 with torch.no_grad():
                     pred, _ = model(model_input_features)
                     pred = pred.view(pred.shape[0], 5 * self.cfg['num_depth'])
-                class_preds += pred
+                
+                if class_preds is None:
+                    class_preds = pred
+                else:
+                    class_preds += pred
             
-            class_preds /= len(sub_models)
+            class_preds /= len(sub_models)  # 平均
             
+            # 索引计算
             two_fingers_depth_idx = torch.from_numpy(features_dic['grasp_depths']).long().to(self.device)
             base = torch.arange(self.cfg['num_depth'], device=self.device).repeat(len(ggarray), 1)
             select_index = two_fingers_depth_idx.view(-1, 1) * self.cfg['num_depth'] + base
@@ -49,7 +56,6 @@ class AllegroInference(BaseInference):
             all_scores.append(class_preds.gather(1, select_index))
 
         all_scores = torch.cat(all_scores, dim=1).view(-1)
-        
         scores, indices = all_scores.topk(min(3000, len(all_scores)))
         pose_indices = (indices / (self.cfg['num_depth'] * self.cfg['num_types'])).long()
         
@@ -62,7 +68,7 @@ class AllegroInference(BaseInference):
         
         return depths, types, scores.cpu().numpy(), ggarray_out, grasp_features_out
 
-    def process_and_filter_grasps(self, multi_finger_gg, two_finger_gg, grasp_features, **kwargs):
+    def process_and_filter_grasps(self, multi_finger_gg, two_finger_gg, grasp_features=None, **kwargs):
         """Post-process and select the best grasp for Allegro."""
         # Custom filtering for Allegro
         score_thresh = 0.7

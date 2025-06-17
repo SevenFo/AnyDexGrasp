@@ -17,8 +17,8 @@ CAMERA_INTRINSICS = {
 }
 
 # --- GraspNet V1 模型配置 ---
-GRASPNET_CHECKPOINT_PATH = 'path/to/your/graspnet_checkpoint.tar' # <<-- 需要您提供正确的路径
-USE_GRASPNET_V2 = False
+GRASPNET_CHECKPOINT_PATH = '/data/shiqi/AnyDexGrasp/logs/model/checkpoint.tar.18' # <<-- 需要您提供正确的路径
+USE_GRASPNET_V2 = True
 HALF_VIEWS = False
 
 
