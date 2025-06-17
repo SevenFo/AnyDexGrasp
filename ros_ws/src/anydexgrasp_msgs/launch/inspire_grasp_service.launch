@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Launch file for AnyDexGrasp Inspire Hand service -->
+  
+  <!-- Parameters -->
+  <arg name="checkpoint_path" default="$(find anydexgrasp_msgs)/../../../logs/model/inspire_model/final_single_point/obj140/checkpoint.tar" />
+  <arg name="max_grasps" default="10" />
+  <arg name="score_threshold" default="0.85" />
+  <arg name="use_graspnet_v2" default="false" />
+  <arg name="half_views" default="false" />
+  <arg name="simple_mode" default="false" />
+  
+  <!-- Choose which service to launch -->
+  <group if="$(arg simple_mode)">
+    <!-- Simple demo service -->
+    <node name="simple_inspire_grasp_service" 
+          pkg="anydexgrasp_msgs" 
+          type="simple_inspire_service.py" 
+          output="screen">
+    </node>
+  </group>
+  
+  <group unless="$(arg simple_mode)">
+    <!-- Full featured service -->
+    <node name="inspire_grasp_planning_service" 
+          pkg="anydexgrasp_msgs" 
+          type="start_service.py" 
+          output="screen">
+      <param name="checkpoint_path" value="$(arg checkpoint_path)" />
+      <param name="max_grasps" value="$(arg max_grasps)" />
+      <param name="score_threshold" value="$(arg score_threshold)" />
+      <param name="use_graspnet_v2" value="$(arg use_graspnet_v2)" />
+      <param name="half_views" value="$(arg half_views)" />
+    </node>
+  </group>
+  
+  <!-- Optional: RViz for visualization -->
+  <arg name="rviz" default="true" />
+  <group if="$(arg rviz)">
+    <node name="rviz" pkg="rviz" type="rviz" 
+          args="-d $(find anydexgrasp_msgs)/rviz/grasp_planning.rviz" 
+          output="screen" />
+  </group>
+  
+</launch>

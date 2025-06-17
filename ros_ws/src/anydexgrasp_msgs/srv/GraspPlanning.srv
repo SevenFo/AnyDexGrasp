@@ -1,0 +1,9 @@
+# srv/GraspPlanning.srv
+# 抓取规划服务定义
+sensor_msgs/PointCloud2 pointcloud  # 输入点云
+float32 score_threshold            # 分数阈值 (可选)
+int32 max_grasps                   # 最大抓取数量 (可选)
+---
+bool success                       # 是否成功
+string message                     # 响应消息
+GraspPose[] grasp_poses           # 抓取姿态数组
