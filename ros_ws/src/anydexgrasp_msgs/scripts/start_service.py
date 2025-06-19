@@ -4,10 +4,11 @@
 """
 Provides a service to convert point clouds to Inspire hand grasp poses
 """
-
+from typing import Union
 import rospy
 import numpy as np
 import sys
+import torch
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 from std_srvs.srv import Trigger, TriggerResponse
@@ -28,14 +29,17 @@ from inference_v2.utils.network import (
     get_gripper_model,
     predict_multi_finger_grasp,
 )
-from inference_v2.utils.data_processing import get_graspgroup_features
-from inference_v2.utils.robot_utils import flip_ggarray
-from graspnetAPI import GraspGroup
+from inference_v2.utils.data_processing import get_graspgroup_features, augment_data
+from inference_v2.utils.robot_utils import flip_ggarray,load_gripper_meshes,flip_z_ggarray
+from inference_v2.main import get_all_grasp_proposals
+from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup,InspireHandRGrasp
+from graspnetAPI import GraspGroup, Grasp
 from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 # Custom service messages (需要先定义这些服务消息类型)
 
 try:
     from anydexgrasp_msgs.srv import GraspPlanning, GraspPlanningResponse
+    from anydexgrasp_msgs.msg import GraspPose
 
     CUSTOM_MSGS_AVAILABLE = True
 except ImportError:
@@ -57,7 +61,7 @@ class InspireGraspPlanningService:
             "~checkpoint_path",
             "logs/model/inspire_model/final_single_point/obj140/checkpoint.tar",
         )
-        self.use_graspnet_v2 = rospy.get_param("~use_graspnet_v2", False)
+        self.use_graspnet_v2 = rospy.get_param("~use_graspnet_v2", True)
         self.half_views = rospy.get_param("~half_views", False)
         self.max_grasps = rospy.get_param("~max_grasps", 10)
         self.score_threshold = rospy.get_param("~score_threshold", 0.85)
@@ -107,6 +111,7 @@ class InspireGraspPlanningService:
             # 初始化多指抓取模型
             rospy.loginfo("Loading gripper-specific models...")
             self.gripper_models = get_gripper_model(self.config)
+            self.gripper_meshes = load_gripper_meshes(self.config)
             rospy.loginfo("Gripper-specific models loaded successfully")
 
             # 初始化碰撞检测器 (will be created per request)
@@ -215,14 +220,38 @@ class InspireGraspPlanningService:
         """执行抓取规划"""
         # 1. 预测二指抓取
         rospy.loginfo("Predicting two-finger grasps...")
-        ggarray, grasp_features, points_down, sinput = predict_grasps(
-            self.net, points, self.config
-        )
+        POINTCLOUD_AUGMENT_NUM = 10
+        all_gg, all_grasp_features, all_sinput = None, None, []
+        # Generate augmentations
+        augment_mats = [np.eye(4)] + [
+            augment_data(flip=(i % 2 != 0)) for i in range(POINTCLOUD_AUGMENT_NUM)
+        ]
 
-        if ggarray is None:
+        for i, mat in enumerate(augment_mats):
+            flip = i > 0 and i % 2 != 0
+            gg, grasp_features, points_down, sinput = predict_grasps(
+                self.net, points, self.config, augment_mat=mat, flip=flip
+            )
+
+            if gg is None:
+                continue
+
+            if all_gg is None:
+                all_gg, all_grasp_features = gg, grasp_features
+            else:
+                all_gg = torch.cat([all_gg, gg], axis=0)
+                all_grasp_features = torch.cat([all_grasp_features, grasp_features], axis=0)
+
+            if sinput:
+                all_sinput.extend(sinput)
+
+        if all_gg is None:
             rospy.logwarn("No two-finger grasps detected")
             return []
-
+        rospy.loginfo(f"Generated {len(all_gg)} two-finger grasps")
+        ggarray = all_gg
+        grasp_features = all_grasp_features
+        sinput = all_sinput
         # 2. 处理抓取姿态
         ggarray = ggarray.cpu().numpy()
         grasp_features = grasp_features.cpu().numpy()
@@ -232,9 +261,10 @@ class InspireGraspPlanningService:
         grasp_features = np.c_[grasp_features, if_flip]
 
         # 对于Inspire手，移除翻转的抓取（因为手不对称）
-        valid_indices = ~if_flip
-        ggarray = ggarray[valid_indices]
-        grasp_features = grasp_features[valid_indices]
+        if config["name"] == "inspire":
+            valid_indices = ~np.array(if_flip)
+            ggarray = ggarray[valid_indices]
+            grasp_features = grasp_features[valid_indices]
 
         # 按分数排序并限制数量
         sorted_indices = ggarray[:, 0].argsort()[::-1][:2000]
@@ -243,7 +273,7 @@ class InspireGraspPlanningService:
 
         # 3. 预测多指抓取类型
         rospy.loginfo("Predicting multi-finger grasp types...")
-        grasp_features_dic = get_graspgroup_features(grasp_features, [sinput])
+        grasp_features_dic = get_graspgroup_features(grasp_features, sinput)
         gripper_depths, gripper_types, scores, ggarray, grasp_features = (
             predict_multi_finger_grasp(
                 self.gripper_models,
@@ -253,8 +283,10 @@ class InspireGraspPlanningService:
                 self.config,
             )
         )
+        rospy.loginfo(f"Generated {len(scores)} multi-finger grasp")
 
         # 过滤低分抓取
+        rospy.loginfo(f"Filtering multi-finger grasp by score_threshold {self.score_threshold}")
         mask = scores > self.score_threshold
         ggarray, grasp_features, gripper_depths, gripper_types, scores = (
             ggarray[mask],
@@ -263,7 +295,9 @@ class InspireGraspPlanningService:
             gripper_types[mask],
             scores[mask],
         )
-
+        rospy.loginfo(f"Remain {len(ggarray)} multi-finger grasp")
+        if self.config.get("has_z_flip", False): # for allegro
+            ggarray = flip_z_ggarray(ggarray, gripper_types)
         if len(ggarray) == 0:
             rospy.logwarn(f"No grasps passed score threshold {self.score_threshold}")
             return []
@@ -271,41 +305,40 @@ class InspireGraspPlanningService:
         # 4. 创建GraspGroup并处理
         two_fingers_gg = GraspGroup(ggarray)
         gripper_gg = self.config["gripper_class"]()
-        gripper_gg.set_grasp_min_width(self.config["min_width"])
+        if self.config["name"] == "inspire":
+            gripper_gg.set_grasp_min_width(self.config["min_width"])
 
         gripper_gg.from_graspgroup(
             two_fingers_gg, gripper_types, self.config["mesh_json_path"]
         )
         gripper_gg.scores = scores
         gripper_gg.depths += gripper_depths + self.config["default_depth"]
-
+        
         # 类型选择
         if self.config.get("select_type_func"):
             selected_indices = self.config["select_type_func"](
                 gripper_gg, self.config["num_type"]
             )
-            if len(selected_indices) > 0:
-                gripper_gg = gripper_gg[selected_indices]
-                two_fingers_gg = two_fingers_gg[selected_indices]
+            gripper_gg = gripper_gg[selected_indices]
+            two_fingers_gg = two_fingers_gg[selected_indices]
+            grasp_features = grasp_features[selected_indices]
 
         if len(gripper_gg) == 0:
-            rospy.logwarn("No grasps left after type selection")
+            print("No grasps left after type selection. Retrying...")
             return []
-
+        rospy.loginfo(f"Remain {len(gripper_gg)} grasps after type selection")
+        
         # 5. 碰撞检测
         rospy.loginfo("Performing collision detection...")
         self.collision_detector = ModelFreeCollisionDetectorMultifinger(
             points_down.cpu().numpy(), voxel_size=0.001
         )
 
-        # 加载机械手网格（简化版本，用于碰撞检测）
-        gripper_meshes = self._load_simple_gripper_meshes()
-
         coll_gg, coll_tf_gg, empty_mask, width_mask = self.collision_detector.detect(
             gripper_gg,
             two_fingers_gg,
             self.config["mesh_json_path"],
-            gripper_meshes,
+            self.gripper_meshes,
             min_grasp_width=self.config["min_width"],
             VoxelGrid=self.config["voxel_grid"],
             approach_dist=self.config["approach_dist"],
@@ -317,8 +350,9 @@ class InspireGraspPlanningService:
         if len(final_indices) == 0:
             rospy.logwarn("No grasps left after collision detection")
             return []
+        rospy.loginfo(f"{len(final_indices)} left after collision detection")
 
-        gripper_gg_final = coll_gg[final_indices]
+        gripper_gg_final:InspireHandRGraspGroup = coll_gg[final_indices]
 
         # 6. 选择最佳抓取并转换为ROS消息
         sorted_indices = np.argsort(gripper_gg_final.scores)[::-1]
@@ -335,15 +369,10 @@ class InspireGraspPlanningService:
         )
         return grasp_poses
 
-    def _load_simple_gripper_meshes(self):
-        """加载简化的机械手网格用于碰撞检测"""
-        # 这里返回空字典，实际应用中需要加载真实的网格
-        # 可以参考原始代码中的load_gripper_meshes函数
-        return {}
-
-    def _convert_grasp_to_pose(self, grasp):
+    def _convert_grasp_to_pose(self, grasp:Union[InspireHandRGrasp,Grasp]) -> GraspPose:
         """将抓取转换为ROS Pose消息"""
         pose = Pose()
+        grasp_pose = GraspPose()
 
         # 位置
         pose.position = Point(
@@ -360,8 +389,10 @@ class InspireGraspPlanningService:
         pose.orientation = Quaternion(
             x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3])
         )
-
-        return pose
+        grasp_pose.pose = pose
+        grasp_pose.score = grasp.score
+        grasp_pose.angles = grasp.angle.tolist()
+        return grasp_pose
 
     def run(self):
         """运行服务"""
