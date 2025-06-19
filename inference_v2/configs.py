@@ -33,14 +33,14 @@ def select_grasp_type_allegro(allegro_gg, num_types):
 
 
 def select_grasp_type_inspire(inspire_gg, num_types):
-    select_gg_types = [[] for _ in range(1, num_types + 1)]
+    select_gg_types = [[] for _ in range(num_types)]
     for idx, score in enumerate(inspire_gg.scores):
         grasp_type = inspire_gg.grasp_types[idx]
         max_num = 50
         if grasp_type in [1]:
             max_num = 10
-        if len(select_gg_types[int(grasp_type)]) < max_num:
-            select_gg_types[int(grasp_type)].append(idx)
+        if len(select_gg_types[int(grasp_type)-1]) < max_num:
+            select_gg_types[int(grasp_type)-1].append(idx)
     gg_type_id = []
     for gg_type in select_gg_types:
         gg_type_id += gg_type
@@ -111,7 +111,7 @@ GRIPPER_CONFIGS = {
         "gripper_class": InspireHandRGraspGroup,
         "grasp_types": inspire_grasp_types,
         "model_class": MinkowskiGraspNetMultifingerType1Inference,
-        "model_path": "logs/model/inspire_model/final_single_point/obj140",
+        "model_path": "logs/model/inspire_model/obj140",
         "save_path": "logs/data/inspire/inspire_test/obj140",
         "mesh_json_path": "generate_mesh_and_pointcloud/inspire_urdf",
         "gripper_port": "/dev/ttyUSB1",
@@ -123,7 +123,7 @@ GRIPPER_CONFIGS = {
         "num_type": 8,
         "voxel_grid": 0.003,
         "default_depth": 0.00,
-        "random_grasp": True,
+        "random_grasp": False,
         "point_cloud_mask": (0.35, 0.68),
         "workspace_mask": (-0.25, 0.25, -0.205, 0.03),
         "cam_intrinsics": {"fx": 919.835, "fy": 919.61, "cx": 631.119, "cy": 363.884},

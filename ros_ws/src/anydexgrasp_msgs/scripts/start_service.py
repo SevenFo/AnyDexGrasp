@@ -21,19 +21,19 @@ anydexgrasp_root = setup_anydexgrasp_paths()
 default_paths = get_default_model_paths(anydexgrasp_root)
 
 # Import from refactored utils
-from configs import GRIPPER_CONFIGS
-from utils.network import (
+from inference_v2.configs import GRIPPER_CONFIGS
+from inference_v2.utils.network import (
     get_net,
     predict_grasps,
     get_gripper_model,
     predict_multi_finger_grasp,
 )
-from utils.data_processing import get_graspgroup_features
-from utils.robot_utils import flip_ggarray
+from inference_v2.utils.data_processing import get_graspgroup_features
+from inference_v2.utils.robot_utils import flip_ggarray
 from graspnetAPI import GraspGroup
-from collision_detector import ModelFreeCollisionDetectorMultifinger
-
+from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 # Custom service messages (需要先定义这些服务消息类型)
+
 try:
     from anydexgrasp_msgs.srv import GraspPlanning, GraspPlanningResponse
 

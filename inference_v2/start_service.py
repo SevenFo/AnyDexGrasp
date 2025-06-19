@@ -17,25 +17,26 @@ from std_srvs.srv import Trigger, TriggerResponse
 import sensor_msgs.point_cloud2 as pc2
 from scipy.spatial.transform import Rotation as R
 
-# Add project directories to sys.path
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.join(BASE_DIR, "..")
-sys.path.append(os.path.join(ROOT_DIR, "models"))
-sys.path.append(os.path.join(ROOT_DIR, "dataset"))
-sys.path.append(os.path.join(ROOT_DIR, "adg_utils"))
+# # Add project directories to sys.path
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ROOT_DIR = os.path.join(BASE_DIR, "..")
+# sys.path.append(os.path.join(ROOT_DIR, "models"))
+# sys.path.append(os.path.join(ROOT_DIR, "dataset"))
+# sys.path.append(os.path.join(ROOT_DIR, "adg_utils"))
+
+from graspnetAPI import GraspGroup
+from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 
 # Import from refactored utils
-from configs import GRIPPER_CONFIGS
-from utils.network import (
+from .configs import GRIPPER_CONFIGS
+from .utils.network import (
     get_net,
     predict_grasps,
     get_gripper_model,
     predict_multi_finger_grasp,
 )
-from utils.data_processing import get_graspgroup_features
-from utils.robot_utils import flip_ggarray
-from graspnetAPI import GraspGroup
-from collision_detector import ModelFreeCollisionDetectorMultifinger
+from .utils.data_processing import get_graspgroup_features
+from .utils.robot_utils import flip_ggarray
 
 # Custom service messages (需要先定义这些服务消息类型)
 try:

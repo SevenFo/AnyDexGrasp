@@ -44,18 +44,18 @@ def setup_anydexgrasp_paths():
         else:
             anydexgrasp_root = "/home/ps/Projects/AnyDexGrasp"
 
-    # 添加必要的路径到 sys.path
-    paths_to_add = [
-        anydexgrasp_root,
-        os.path.join(anydexgrasp_root, "inference_v2"),
-        os.path.join(anydexgrasp_root, "models"),
-        os.path.join(anydexgrasp_root, "dataset"),
-        os.path.join(anydexgrasp_root, "adg_utils"),
-    ]
+    # # 添加必要的路径到 sys.path
+    # paths_to_add = [
+    #     anydexgrasp_root,
+    #     os.path.join(anydexgrasp_root, "inference_v2"),
+    #     os.path.join(anydexgrasp_root, "models"),
+    #     os.path.join(anydexgrasp_root, "dataset"),
+    #     os.path.join(anydexgrasp_root, "adg_utils"),
+    # ]
 
-    for path in paths_to_add:
-        if os.path.exists(path) and path not in sys.path:
-            sys.path.insert(0, path)
+    # for path in paths_to_add:
+    #     if os.path.exists(path) and path not in sys.path:
+    #         sys.path.insert(0, path)
 
     return anydexgrasp_root
 

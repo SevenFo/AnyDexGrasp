@@ -1,11 +1,14 @@
 # File: Inference/utils/network.py
 import copy
 import torch
+import os
 import numpy as np
 import MinkowskiEngine as ME
+from collections import OrderedDict
 
 from models.minkowski_graspnet_single_point import MinkowskiGraspNet
-from pt_utils import batch_viewpoint_params_to_matrix
+from adg_utils.pt_utils import batch_viewpoint_params_to_matrix
+from adg_utils.np_utils import transform_point_cloud
 
 BATCH_SIZE = 1  # Constant from original files
 
@@ -29,6 +32,89 @@ def get_net(checkpoint_path, cfgs):
 
 
 def parse_preds(end_points, max_width):
+    ## load preds
+    MAX_GRASP_WIDTH = max_width
+    before_generator = end_points['before_generator']  # (B, Ns, 256)
+    point_features = end_points['point_features']  # (B, Ns, 512)
+    coords = end_points['sinput'].C  # (\Sigma Ni, 4)
+    objectness_pred = end_points['stage1_objectness_pred']  # (Sigma Ni, 2)
+    objectness_mask = torch.argmax(objectness_pred, dim=1).bool()  # (\Sigma Ni,)
+    seed_xyz = end_points['stage2_seed_xyz']  # (B, Ns, 3)
+    seed_inds = end_points['stage2_seed_inds']  # (B, Ns)
+    grasp_view_xyz = end_points['stage2_view_xyz']  # (B, Ns, 3)
+    grasp_view_inds = end_points['stage2_view_inds']
+    grasp_view_scores = end_points['stage2_view_scores']
+    grasp_scores = end_points['stage3_grasp_scores']  # (B, Ns, A, D)
+    grasp_features_two_finger = end_points['stage3_grasp_features'].view(grasp_scores.size()[0], grasp_scores.size()[1], -1) # (B, Ns, 3 + C)
+    grasp_widths = MAX_GRASP_WIDTH * end_points['stage3_normalized_grasp_widths']  # (B, Ns, A, D)
+    grasp_widths[grasp_widths > MAX_GRASP_WIDTH] = MAX_GRASP_WIDTH
+
+    grasp_preds = []
+    grasp_features = []
+    grasp_vdistance_list = []
+    for i in range(BATCH_SIZE):
+        
+        cloud_mask_i = (coords[:, 0] == i)
+        seed_inds_i = seed_inds[i]
+        objectness_mask_i = objectness_mask[cloud_mask_i][seed_inds_i]  # (Ns,)
+
+        if objectness_mask_i.any() == False:
+            continue
+
+        seed_xyz_i = seed_xyz[i] # [objectness_mask_i]  # (Ns', 3)
+        point_features_i = point_features[i] # [objectness_mask_i]
+        
+        seed_inds_i = seed_inds_i # [objectness_mask_i]
+        before_generator_i = before_generator[i] # [objectness_mask_i]
+        grasp_view_xyz_i = grasp_view_xyz[i] # [objectness_mask_i]  # (Ns', 3)
+        grasp_view_inds_i = grasp_view_inds[i] # [objectness_mask_i]
+        grasp_view_scores_i = grasp_view_scores[i] # [objectness_mask_i]
+        grasp_scores_i = grasp_scores[i] # [objectness_mask_i]  # (Ns', A, D)
+        grasp_widths_i = grasp_widths[i] # [objectness_mask_i] # (Ns', A, D)
+        
+        Ns, A, D = grasp_scores_i.size()
+        grasp_features_two_finger_i = grasp_features_two_finger[i] # [objectness_mask_i] # (Ns', 3 + C)
+        grasp_scores_i_A_D = copy.deepcopy(grasp_scores_i).view(Ns, -1)
+
+        grasp_scores_i = torch.minimum(grasp_scores_i[:,:24,:], grasp_scores_i[:,24:,:])
+        seed_inds_i = seed_inds_i.view(Ns, -1)
+        grasp_view_inds_i = grasp_view_inds_i.view(Ns, -1)
+        grasp_view_scores_i = grasp_view_scores_i.view(Ns, -1)
+
+        grasp_scores_i, grasp_angles_class_i = torch.max(grasp_scores_i, dim=1) # (Ns', D), (Ns', D)
+        grasp_angles_i = (grasp_angles_class_i.float()-12) / 24 * np.pi  # (Ns', topk, D)
+
+        # grasp width & vdistance
+        grasp_angles_class_i = grasp_angles_class_i.unsqueeze(1) # (Ns', 1, D)
+        grasp_widths_pos_i = torch.gather(grasp_widths_i, 1, grasp_angles_class_i).squeeze(1) # (Ns', D)
+        grasp_widths_neg_i = torch.gather(grasp_widths_i, 1, grasp_angles_class_i+24).squeeze(1) # (Ns', D)
+
+        ## slice preds by grasp score/depth
+        # grasp score & depth
+        grasp_scores_i, grasp_depths_class_i = torch.max(grasp_scores_i, dim=1, keepdims=True) # (Ns', 1), (Ns', 1)
+        grasp_depths_i = (grasp_depths_class_i.float() + 1) * 0.01  # (Ns'*topk, 1)
+
+        grasp_depths_i -= 0.01
+        grasp_depths_i[grasp_depths_class_i==0] = 0.005
+        # grasp angle & width & vdistance
+        grasp_angles_i = torch.gather(grasp_angles_i, 1, grasp_depths_class_i) # (Ns', 1)
+        grasp_widths_pos_i = torch.gather(grasp_widths_pos_i, 1, grasp_depths_class_i) # (Ns', 1)
+        grasp_widths_neg_i = torch.gather(grasp_widths_neg_i, 1, grasp_depths_class_i) # (Ns', 1)
+
+        # convert to rotation matrix
+        rotation_matrices_i = batch_viewpoint_params_to_matrix(-grasp_view_xyz_i, grasp_angles_i.squeeze(1))
+
+        # # adjust gripper centers
+        grasp_widths_i = grasp_widths_pos_i + grasp_widths_neg_i
+        rotation_matrices_i = rotation_matrices_i.view(Ns, 9)
+
+        # merge preds
+        grasp_preds.append(torch.cat([grasp_scores_i, grasp_widths_i, grasp_depths_i, rotation_matrices_i, seed_xyz_i],axis=1))  # (Ns, 15)
+        grasp_features.append(torch.cat([grasp_scores_i_A_D, grasp_features_two_finger_i, before_generator_i, point_features_i, grasp_view_inds_i, grasp_view_scores_i, seed_inds_i, grasp_angles_i*24/np.pi+12, grasp_depths_i], axis=1)) # (Ns'*3, A, D)
+        
+    return grasp_preds, grasp_features
+
+def parse_preds_d(end_points, max_width):
     """Parses raw network output into grasp predictions and features."""
     coords = end_points["sinput"].C
     seed_inds = end_points["stage2_seed_inds"]
@@ -36,9 +122,16 @@ def parse_preds(end_points, max_width):
     grasp_scores = end_points["stage3_grasp_scores"]
     grasp_widths = max_width * end_points["stage3_normalized_grasp_widths"]
     grasp_widths[grasp_widths > max_width] = max_width
+    objectness_pred = end_points['stage1_objectness_pred']  # (Sigma Ni, 2)
+    objectness_mask = torch.argmax(objectness_pred, dim=1).bool()  # (\Sigma Ni,)
 
     grasp_preds, grasp_features = [], []
     for i in range(BATCH_SIZE):
+        # cloud_mask_i = (coords[:, 0] == i)
+        # seed_inds_i = seed_inds[i]
+        # objectness_mask_i = objectness_mask[cloud_mask_i][seed_inds_i]  # (Ns,)
+        # if objectness_mask_i.any() == False:
+        #     continue
         seed_xyz_i = seed_xyz[i]
         grasp_scores_i = end_points["stage3_grasp_scores"][i]
         grasp_widths_i = grasp_widths[i]
@@ -96,7 +189,7 @@ def parse_preds(end_points, max_width):
             Ns, -1
         )
         grasp_features_two_finger_i = end_points["stage3_grasp_features"].view(
-            grasp_scores_i.size()[0], grasp_scores_i.size()[1], -1
+            grasp_scores.size()[0], grasp_scores.size()[1], -1
         )[i]
         before_generator_i = end_points["before_generator"][i]
         point_features_i = end_points["point_features"][i]
@@ -152,14 +245,12 @@ def predict_grasps(
     if flip:
         augment_mat[:, 0] = -augment_mat[:, 0]
 
-    inv_augment_mat = torch.tensor(
-        np.linalg.inv(augment_mat), dtype=torch.float32, device=device
-    )
-    rotation = inv_augment_mat[:3, :3]
-    translation = inv_augment_mat[:3, 3]
-
-    preds[:, 12:15] = torch.matmul(rotation, preds[:, 12:15].T).T + translation
-    pose_rotation = torch.matmul(rotation, preds[:, 3:12].view(-1, 3, 3))
+    augment_mat_tensor = torch.tensor(copy.deepcopy(np.linalg.inv(augment_mat).astype(np.float32)), device=device)
+    rotation = augment_mat_tensor[:3, :3].reshape((-1)).repeat((preds.size()[0], 1)).view((preds.size()[0], 3, 3))
+    translation = augment_mat_tensor[:3, 3]
+    
+    preds[:,12:15] = torch.matmul(rotation, preds[:,12:15].view((-1, 3, 1))).view(-1, 3) + translation
+    pose_rotation = torch.matmul(rotation, preds[:,3:12].view((-1, 3, 3)))
 
     if flip:
         preds[:, 12] = -preds[:, 12]
@@ -170,7 +261,7 @@ def predict_grasps(
 
     # Filtering
     mask_quality = (
-        (preds[:, 0] > 0.8)
+        (preds[:, 9] > 0.92)
         & (preds[:, 1] < config["max_width"])
         & (preds[:, 1] > config["min_width"])
     )
@@ -200,6 +291,9 @@ def predict_grasps(
 
 def get_gripper_model(config):
     """Loads the gripper-specific prediction models."""
+    import sys
+    from models import minkowski_graspnet
+    sys.modules['minkowski_graspnet'] = minkowski_graspnet
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     gripper_models = {}
     model_base_path = config["model_path"]
@@ -216,7 +310,8 @@ def get_gripper_model(config):
                 model.to(device)
                 model.eval()
                 models.append(model)
-            gripper_models[model_type][model_class] = models
+            assert len(models) == 1, f"len(models):{len(models)} != 1"
+            gripper_models[model_type][model_class] = models[0]
     return gripper_models
 
 
@@ -244,26 +339,31 @@ def predict_multi_finger_grasp(
     all_scores = []
     num_depth, num_type = config["num_depth"], config["num_type"]
 
-    for model_type, models_by_class in sorted(gripper_models.items()):
+    for model_type, models_by_class in gripper_models.items():
         if model_type == "240":  # Skip as '480' is the final one used
             continue
         elif model_type == "480":
+            print('use final model: ', model_type)
             model_input = grasp_features_dic["grasp_preds_features"]
+        
+        models_by_class_sorted = OrderedDict(sorted(models_by_class.items(), key = lambda t : int(t[0])))
+        for model_class, sub_models in models_by_class_sorted.items():
+            # class_scores = torch.tensor(0, device=device)
+            # for sub_model in sub_models:
+            #     with torch.no_grad():
+            #         pred, _ = sub_model(model_input)
+            #         pred = pred.view(
+            #             pred.shape[0], -1
+            #         )  # (B, 5 * num_depth) for one class
+            #     class_scores += pred
 
-        for model_class, sub_models in sorted(models_by_class.items()):
-            class_scores = torch.tensor(0, device=device)
-            for sub_model in sub_models:
-                with torch.no_grad():
-                    pred, _ = sub_model(model_input)
-                    pred = pred.view(
-                        pred.shape[0], -1
-                    )  # (B, 5 * num_depth) for one class
-                class_scores += pred
-
-            class_scores /= len(sub_models)
-
+            # class_scores /= len(sub_models)
+            # HARD CODE
+            with torch.no_grad():
+                grasp_pred, _ = sub_models(model_input)
+                grasp_pred = grasp_pred.view(grasp_pred.shape[0],-1) # (B, num_depth)
             # Select scores based on two-finger depth
-            two_finger_depths = grasp_features_dic["grasp_depths"].view(-1, 1)  # (B, 1)
+            two_finger_depths = grasp_features_dic["grasp_depths"].view(-1, 1)  # (B, 1) for boardcasting
             base_indices = torch.arange(num_depth, device=device).unsqueeze(
                 0
             )  # (1, num_depth)
@@ -271,12 +371,12 @@ def predict_multi_finger_grasp(
                 two_finger_depths * num_depth + base_indices
             )  # (B, num_depth)
 
-            selected_scores = class_scores.gather(1, select_indices.long())
+            selected_scores = grasp_pred.gather(1, select_indices.long())
             all_scores.append(selected_scores)
 
     final_scores = torch.cat(all_scores, dim=1).view(-1)
 
-    top_k_count = min(3500, final_scores.size(0))
+    top_k_count = min(3000, final_scores.size(0)) # HARD CODE
     scores, indices = final_scores.topk(top_k_count)
 
     pose_indices = (indices / (num_depth * num_type)).long()
@@ -301,4 +401,4 @@ def predict_multi_finger_grasp(
         scores.detach().cpu().numpy(),
         ggarray_out,
         grasp_features_out,
-    )
+    ) 

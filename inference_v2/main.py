@@ -7,29 +7,50 @@ import random
 import torch
 import numpy as np
 import open3d as o3d
+import cv2
 from multiprocessing import shared_memory
+# 设置随机种子
+def set_seed(seed):
+    # 设置 NumPy 的随机种子
+    np.random.seed(seed)
+    
+    # 设置 Python 内置 random 模块的随机种子
+    random.seed(seed)
+    
+    # 设置 PyTorch 的随机种子
+    torch.manual_seed(seed)
+    
+    # 如果使用 CUDA（GPU），设置相关种子
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # 多 GPU 情况
+        torch.backends.cudnn.deterministic = True  # 确保卷积操作确定性
+        torch.backends.cudnn.benchmark = False     # 关闭优化基准（保证可复现性）
 
-# Add project directories to sys.path
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.join(BASE_DIR, "..")
-sys.path.append(os.path.join(ROOT_DIR, "models"))
-sys.path.append(os.path.join(ROOT_DIR, "dataset"))
-sys.path.append(os.path.join(ROOT_DIR, "utils"))
+# 使用示例（设置种子为42）
+set_seed(42)
+# # Add project directories to sys.path
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ROOT_DIR = os.path.join(BASE_DIR, "..")
+# sys.path.append(os.path.join(ROOT_DIR, "models"))
+# sys.path.append(os.path.join(ROOT_DIR, "dataset"))
+# sys.path.append(os.path.join(ROOT_DIR, "utils"))
 
 from graspnetAPI import GraspGroup
-from collision_detector import ModelFreeCollisionDetectorMultifinger
+from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 
 # Import from refactored utils
-from configs import GRIPPER_CONFIGS
-from utils.camera import get_depth, get_point_cloud
-from utils.network import (
+from .configs import GRIPPER_CONFIGS
+from .utils.camera import get_depth, get_point_cloud
+from .utils.network import (
     get_net,
     predict_grasps,
     get_gripper_model,
     predict_multi_finger_grasp,
 )
-from utils.data_processing import augment_data, get_graspgroup_features
-from utils.robot_utils import (
+from .utils.visualization import visualize_grasp_proposals
+from .utils.data_processing import augment_data, get_graspgroup_features
+from .utils.robot_utils import (
     get_robot,
     load_gripper_meshes,
     flip_ggarray,
@@ -51,9 +72,9 @@ def parse_args():
         help="Specify the gripper to use.",
     )
     parser.add_argument(
-        "--checkpoint_path", required=True, help="GraspNet model checkpoint path"
+        "--checkpoint_path", default='/data/shiqi/AnyDexGrasp/logs/model/checkpoint.tar.18', help="GraspNet model checkpoint path"
     )
-    parser.add_argument("--robot_ip", required=True, help="Robot IP address")
+    parser.add_argument("--robot_ip", default='0.0.0.0', help="Robot IP address")
     parser.add_argument(
         "--use_graspnet_v2",
         action="store_true",
@@ -67,17 +88,45 @@ def parse_args():
         action="store_true",
         help="Use settings for a global camera setup.",
     )
+    # 添加无机器人模式参数
+    parser.add_argument(
+        "--no_robot", action="store_true",
+        help="Run without physical robot, using mock robot and file inputs"
+    )
+    # 添加文件输入参数
+    parser.add_argument(
+        "--depth_image", type=str, default="depth_2.png",
+        help="Depth file path (npy format) for no_robot mode"
+    )
+    parser.add_argument(
+        "--color_image", type=str, default="rgb_2.png",
+        help="Color file path (npy format) for no_robot mode"
+    )
     return parser.parse_args()
 
 
-def get_all_grasp_proposals(net, existing_shm_depth, existing_shm_color, config):
+def get_all_grasp_proposals(net, cfgs, config):
     """Augments point cloud and aggregates grasp proposals."""
-    depths = get_depth(existing_shm_depth)
-    colors = np.copy(
-        np.ndarray((720, 1280, 3), dtype=np.float32, buffer=existing_shm_color.buf)
-    )
+    if cfgs.no_robot:
+        # 从文件加载深度和彩色图
+        depths = cv2.imread(cfgs.depth_image, cv2.IMREAD_ANYDEPTH)
+        if depths is None:
+            print("Error: Failed to load depth image")
+            return
+        
+        colors = None
+        if cfgs.color_image and os.path.exists(cfgs.color_image):
+            colors = cv2.imread(cfgs.color_image)
+            if colors is not None:
+                colors = cv2.cvtColor(colors, cv2.COLOR_BGR2RGB)
+    else:
+        # 从共享内存获取
+        existing_shm_depth = shared_memory.SharedMemory(name="realsense_depth")
+        existing_shm_color = shared_memory.SharedMemory(name="realsense_color")
+        depths = get_depth(existing_shm_depth)
+        colors = np.copy(np.ndarray((720, 1280, 3), dtype=np.float32, buffer=existing_shm_color.buf))
+    
     points, cloud = get_point_cloud(depths, colors, config)
-
     all_gg, all_grasp_features, all_sinput = None, None, []
 
     # Generate augmentations
@@ -114,9 +163,6 @@ def robot_grasp_loop(cfgs, config):
     gripper_models = get_gripper_model(config)
     gripper_meshes = load_gripper_meshes(config)
 
-    existing_shm_color = shared_memory.SharedMemory(name="realsense_color")
-    existing_shm_depth = shared_memory.SharedMemory(name="realsense_depth")
-
     # Initial robot movement
     v, a = 0.07, 0.07
     if cfgs.global_camera:
@@ -143,17 +189,33 @@ def robot_grasp_loop(cfgs, config):
             sinput,
             depths_saved,
             colors_saved,
-        ) = get_all_grasp_proposals(net, existing_shm_depth, existing_shm_color, config)
+        ) = get_all_grasp_proposals(net, cfgs, config)
 
         net_time = time.time() - loop_start_time
         print(f"Grasp Prediction Time: {net_time:.2f}s")
 
+        if DEBUG and cloud:
+            # 检查点云是否为空
+            if not cloud.has_points():
+                print("Cloud has no points!")
+            else:
+                # 打印点云的范围
+                print("Cloud bounding box:", cloud.get_axis_aligned_bounding_box())
+                # 打印点云的中心
+                print("Cloud center:", cloud.get_center())
+                # 尝试给点云上色（如果点云没有颜色属性）
+                # 注意：如果点云已经有颜色，我们可以跳过这一步
+                if not cloud.has_colors():
+                    # 将点云染成红色
+                    cloud.paint_uniform_color([1, 0, 0])
+                    print("Painted cloud red.")
+
+            # 绘制
+            o3d.visualization.draw_geometries(
+                [cloud, o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)]
+            )
         if ggarray is None:
             print("No grasps detected. Retrying...")
-            if DEBUG and cloud:
-                o3d.visualization.draw_geometries(
-                    [cloud, o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)]
-                )
             continue
 
         # 2. Process proposals: convert to numpy, flip, sort
@@ -165,7 +227,7 @@ def robot_grasp_loop(cfgs, config):
 
         # For Inspire, remove flipped grasps as the hand is not symmetric
         if config["name"] == "inspire":
-            valid_indices = ~if_flip
+            valid_indices = ~np.array(if_flip)
             ggarray = ggarray[valid_indices]
             grasp_features = grasp_features[valid_indices]
 
@@ -256,21 +318,33 @@ def robot_grasp_loop(cfgs, config):
         # Sort by score and pick one randomly from top 10
         sorted_indices = np.argsort(gripper_gg_final.scores)[::-1]
         top_indices = sorted_indices[: min(10, len(sorted_indices))]
-        chosen_idx = random.choice(top_indices)
+        gripper_gg_top = gripper_gg_final[top_indices]
+        two_fingers_gg_top = two_fingers_gg_final[top_indices]
 
+        # 可视化top10抓取
+        print("Visualizing top 10 grasps...")
+        visualize_grasp_proposals(
+            cloud, 
+            two_fingers_gg_top, 
+            gripper_gg_top, 
+            config,
+            "Top 10 Grasp Proposals"
+        )
+        
+        chosen_idx = random.choice(top_indices).item()
+        print(f"random chose grasp index:{chosen_idx} from top 10 {top_indices}")
         gripper_grasp_used = gripper_gg_final[chosen_idx]
         two_fingers_grasp_used = two_fingers_gg_final[chosen_idx]
         grasp_features_used = grasp_features_final[chosen_idx]
 
-        print(f"\n--- Executing Grasp for {config['name'].upper()} ---")
-        print(
-            f"Type: {gripper_grasp_used.grasp_type}, Score: {gripper_grasp_used.score:.4f}"
-        )
-        print(
-            f"Width: {gripper_grasp_used.width:.4f}, Depth: {gripper_grasp_used.depth:.4f}"
-        )
-
-        if DEBUG:
+        mode = "Visualization" if cfgs.no_robot else "Execution"
+        print(f"\n--- {mode} for {config['name'].upper()} ---")
+        print(f"Type: {gripper_grasp_used.grasp_type}, Score: {gripper_grasp_used.score:.4f}")
+        print(f"Width: {gripper_grasp_used.width:.4f}, Depth: {gripper_grasp_used.depth:.4f}")
+        print((f"Angles: [little:{gripper_grasp_used.angle[0]}, ring:{gripper_grasp_used.angle[1]},\n",
+                f"mid:{gripper_grasp_used.angle[2]}, index:{gripper_grasp_used.angle[3]},\n" 
+                f"thumb_bending:{gripper_grasp_used.angle[4]}, thumb_rotation:{gripper_grasp_used.angle[5]}]"))
+        if cfgs.no_robot:
             gripper_mesh = gripper_grasp_used.load_mesh(
                 config["mesh_json_path"], two_fingers_grasp_used
             )
@@ -297,8 +371,9 @@ def robot_grasp_loop(cfgs, config):
             use_ready_pose=True,
             gripper_time=gripper_time,
         )
-        while robot.is_program_running():
-            pass
+        if not cfgs.no_robot:
+            while robot.is_program_running():
+                pass
 
         # 7. Save Information
         save_data = {
@@ -318,9 +393,16 @@ def robot_grasp_loop(cfgs, config):
         mpph = 3600 / exec_time
         print(f"Execution Time: {exec_time:.2f}s | MPPH: {mpph:.2f}")
         print("----------------------------------------\n")
-
+        
+        if cfgs.no_robot:
+            user_input = input("Grasp visualized. Continue? (y/n): ")
+            if user_input.lower() != 'y':
+                print("Exiting no_robot mode...")
+                break
 
 if __name__ == "__main__":
+    import os
+    os.environ['DISPLAY'] = '109.105.4.86:0.0'
     args = parse_args()
     config = GRIPPER_CONFIGS[args.gripper]
 
@@ -334,6 +416,13 @@ if __name__ == "__main__":
     config["mesh_json_path"] = getattr(
         args, f"{config['name']}_mesh_json_path", config["mesh_json_path"]
     )
+
+    # 检查no_robot模式下的文件存在性
+    if args.no_robot:
+        if not os.path.exists(args.depth_image):
+            raise FileNotFoundError(f"Depth file not found: {args.depth_image}")
+        if not os.path.exists(args.color_image):
+            raise FileNotFoundError(f"Color file not found: {args.color_image}")
 
     start_time = time.time()
     try:

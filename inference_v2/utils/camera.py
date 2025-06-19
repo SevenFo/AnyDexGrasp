@@ -36,7 +36,11 @@ def get_point_cloud(depths, colors, config):
 
     points = np.stack([points_x, points_y, points_z], axis=-1)
     points = points[mask].astype(np.float32)
-    colors = colors[mask].astype(np.float32)
+    if colors is not None:
+        if colors.dtype == np.uint8:
+            colors = colors[mask].astype(np.float32) / 255.0 
+        else:
+            colors = colors[mask].astype(np.float32)
 
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(points)

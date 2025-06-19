@@ -14,7 +14,27 @@ import open3d as o3d
 import MinkowskiEngine as ME
 from graspnetAPI import GraspGroup
 from collections import OrderedDict
+import random
+# 设置随机种子
+def set_seed(seed):
+    # 设置 NumPy 的随机种子
+    np.random.seed(seed)
+    
+    # 设置 Python 内置 random 模块的随机种子
+    random.seed(seed)
+    
+    # 设置 PyTorch 的随机种子
+    torch.manual_seed(seed)
+    
+    # 如果使用 CUDA（GPU），设置相关种子
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # 多 GPU 情况
+        torch.backends.cudnn.deterministic = True  # 确保卷积操作确定性
+        torch.backends.cudnn.benchmark = False     # 关闭优化基准（保证可复现性）
 
+# 使用示例（设置种子为42）
+set_seed(42)
 from models.minkowski_graspnet_single_point import MinkowskiGraspNet, MinkowskiGraspNetMultifingerType1Inference
 from adg_utils.np_utils import transform_point_cloud
 from adg_utils.pt_utils import batch_viewpoint_params_to_matrix
@@ -22,11 +42,11 @@ from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--checkpoint_path', required=True, help='Model checkpoint path')
+parser.add_argument('--checkpoint_path', default='/data/shiqi/AnyDexGrasp/logs/model/checkpoint.tar.18', help='Model checkpoint path')
 parser.add_argument('--inspire_model_path', default='logs/model/inspire_model/obj140', help='inspire model checkpoint path')
 parser.add_argument('--inspire_mesh_json_path', default='generate_mesh_and_pointcloud/inspire_urdf', help='InspireHandR meshes and json path')
-parser.add_argument('--depth_image', default=None, help='Path to pre-recorded depth image (PNG)')
-parser.add_argument('--color_image', default=None, help='Path to pre-recorded color image (PNG)')
+parser.add_argument('--depth_image', default='depth_2.png', help='Path to pre-recorded depth image (PNG)')
+parser.add_argument('--color_image', default='rgb_2.png', help='Path to pre-recorded color image (PNG)')
 parser.add_argument('--use_graspnet_v2', action='store_true', help='Whether to use graspnet v2 format')
 parser.add_argument('--half_views', action='store_true', help='Use only half views in network.')
 cfgs = parser.parse_args()
@@ -543,7 +563,26 @@ def process_and_visualize():
     ggarray, cloud, points_down, grasp_features, sinput = get_ggarray_features(net, depths, color_image)
     t3 = time.time()
     print(f'Net Time:{t3 - t1}')
-    
+    # 检查点云是否为空
+    if not cloud.has_points():
+        print("Cloud has no points!")
+    else:
+        # 打印点云的范围
+        print("Cloud bounding box:", cloud.get_axis_aligned_bounding_box())
+        # 打印点云的中心
+        print("Cloud center:", cloud.get_center())
+        # 尝试给点云上色（如果点云没有颜色属性）
+        # 注意：如果点云已经有颜色，我们可以跳过这一步
+        if not cloud.has_colors():
+            # 将点云染成红色
+            cloud.paint_uniform_color([1, 0, 0])
+            print("Painted cloud red.")
+
+    # 绘制
+    o3d.visualization.draw_geometries(
+        [cloud, o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)]
+    )
+
     if ggarray is None:
         print('No grasp detected')
         return

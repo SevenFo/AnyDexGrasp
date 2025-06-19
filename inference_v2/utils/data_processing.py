@@ -11,22 +11,32 @@ def transform_point_cloud(cloud, transform):
 
 
 def augment_data(flip=False):
-    """Applies random augmentation to a 4x4 transformation matrix."""
     flip_mat = np.identity(4)
+    # Flipping along the YZ plane
     if flip:
-        flip_mat = np.array([[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        flip_mat = np.array([[-1, 0, 0, 0],
+                             [0, 1, 0, 0],
+                             [0, 0, 1, 0],
+                             [0, 0, 0, 1]])
 
-    rot_angle = (np.random.random() * np.pi / 3) - np.pi / 6
+    # Rotation along up-axis/Z-axis
+    rot_angle = (np.random.random() * np.pi / 3) - np.pi / 6  # -30 ~ +30 degree
     c, s = np.cos(rot_angle), np.sin(rot_angle)
-    rot_mat = np.array([[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+    rot_mat = np.array([[c, -s, 0, 0],
+                        [s, c, 0, 0],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]])
 
-    offset_x = np.random.random() * 0.1 - 0.05
-    offset_y = np.random.random() * 0.1 - 0.05
-    trans_mat = np.array(
-        [[1, 0, 0, offset_x], [0, 1, 0, offset_y], [0, 0, 1, 0], [0, 0, 0, 1]]
-    )
+    # Translation along X/Y/Z-axis
+    offset_x = np.random.random() * 0.1 - 0.05  # -0.05 ~ 0.05
+    offset_y = np.random.random() * 0.1 - 0.05  # -0.05 ~ 0.05
+    trans_mat = np.array([[1, 0, 0, offset_x],
+                          [0, 1, 0, offset_y],
+                          [0, 0, 1, 0],
+                          [0, 0, 0, 1]])
 
-    return np.dot(trans_mat, np.dot(rot_mat, flip_mat)).astype(np.float32)
+    aug_mat = np.dot(trans_mat, np.dot(rot_mat, flip_mat).astype(np.float32)).astype(np.float32)
+    return aug_mat
 
 
 def get_grasp_features(grasp_features_array):

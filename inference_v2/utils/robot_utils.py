@@ -8,8 +8,49 @@ import open3d as o3d
 from collections import OrderedDict
 from ur_toolbox.robot import UR_Camera_Gripper
 
+from .data_processing import get_grasp_features
+
+class MockRobot:
+    """模拟机器人对象，用于no_robot模式"""
+    def __init__(self):
+        self.throwj2 = [0, 0, 0, 0, 0, 0]
+        print("Initialized mock robot for no_robot mode")
+    
+    def ready_pose(self):
+        return [0, 0, 0, 0, 0, 0]
+    
+    def movej(self, *args, **kwargs):
+        print(f"[MockRobot] movej called with args: {args}, kwargs: {kwargs}")
+    
+    def movel(self, *args, **kwargs):
+        print(f"[MockRobot] movel called with args: {args}, kwargs: {kwargs}")
+    
+    def gripper_home(self):
+        print("[MockRobot] gripper_home called")
+    
+    def open_gripper(self, angle, sleep_time=0.8):
+        print(f"[MockRobot] open_gripper called (angle: {angle}, sleep_time: {sleep_time})")
+    
+    def grasp_and_throw(self, *args, **kwargs):
+        print(f"[MockRobot] grasp_and_throw called with {len(args)} args and {len(kwargs)} kwargs")
+        print("Grasp parameters:")
+        print(f"  - Grasp type: {args[0].grasp_type}")
+        print(f"  - Score: {args[0].score}")
+        print(f"  - Width: {args[0].width}")
+        return np.eye(4)  # 返回单位矩阵作为位姿
+    
+    def is_program_running(self):
+        return False
 
 def get_robot(cfgs, config):
+    """获取机器人对象，在no_robot模式下返回模拟机器人"""
+    if cfgs.no_robot:
+        return MockRobot()
+    else:
+        # 原有真实机器人初始化代码
+        return get_real_robot(cfgs, config)
+
+def get_real_robot(cfgs, config):
     """Initializes and configures the robot and gripper."""
     robot = UR_Camera_Gripper(
         cfgs.robot_ip,
@@ -60,7 +101,7 @@ def flip_ggarray(ggarray, flip_logic):
         rotations[indices_to_flip, :, 1:3] *= -1
     elif flip_logic == "y_x < 0_inspire":
         indices_to_flip = np.where(y_axis_x_comp < 0)[0]
-        rotations[indices_to_flip, :, 0:2] *= -1  # Inspire flips x and y axes
+        rotations[indices_to_flip, :3, 0:2] *= -1  # Inspire flips x and y axes
 
     if_flip[indices_to_flip] = True
     ggarray[:, 4:13] = rotations.reshape((-1, 9))
@@ -81,6 +122,16 @@ def flip_z_ggarray(ggarray, allegro_types):
 
 
 def save_grasp_information(data_dict):
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, np.integer):
+                return int(o)
+            elif isinstance(o, np.floating):
+                return float(o)
+            elif isinstance(o, np.ndarray):
+                return o.tolist()
+            else:
+                return super().default(o)
     """Saves all information about the grasp attempt to a JSON file and images."""
     config = data_dict["config"]
     gripper_grasp_used = data_dict["gripper_grasp_used"]
@@ -126,13 +177,13 @@ def save_grasp_information(data_dict):
         int(gripper_grasp_used.depth * 100) - grasp_features_used["grasp_depths"]
     )
 
-    mat_pose = data_dict["mat_pose"]
-    info["base_2_tcp1"] = np.array(mat_pose[0]).tolist()
-    info["base_2_tcp1_backup"] = np.array(mat_pose[1]).tolist()
-    info["tcp_2_gripper"] = np.array(mat_pose[2]).tolist()
-    info["base_2_TwoFingersGripper_pose"] = np.array(mat_pose[3]).tolist()
-    info["tcp_2_camera"] = np.array(mat_pose[4]).tolist()
-    info["base_2_tcp_ready"] = np.array(mat_pose[5]).tolist()
+    # mat_pose = data_dict["mat_pose"]
+    # info["base_2_tcp1"] = np.array(mat_pose[0]).tolist()
+    # info["base_2_tcp1_backup"] = np.array(mat_pose[1]).tolist()
+    # info["tcp_2_gripper"] = np.array(mat_pose[2]).tolist()
+    # info["base_2_TwoFingersGripper_pose"] = np.array(mat_pose[3]).tolist()
+    # info["tcp_2_camera"] = np.array(mat_pose[4]).tolist()
+    # info["base_2_tcp_ready"] = np.array(mat_pose[5]).tolist()
 
     cam_intrinsics = config["cam_intrinsics"]
     info["camera_internal"] = [
@@ -141,14 +192,14 @@ def save_grasp_information(data_dict):
     ]
 
     # Save data
-    cv2.imwrite(
-        os.path.join(save_path, "color.png"),
-        cv2.cvtColor(data_dict["colors_saved"] * 255.0, cv2.COLOR_RGB2BGR),
-    )
-    cv2.imwrite(os.path.join(save_path, "depth.png"), data_dict["depths_saved"])
+    # cv2.imwrite(
+        # os.path.join(save_path, "color.png"),
+        # cv2.cvtColor(data_dict["colors_saved"] * 255.0, cv2.COLOR_RGB2BGR),
+    # )
+    # cv2.imwrite(os.path.join(save_path, "depth.png"), data_dict["depths_saved"])
 
     with open(os.path.join(save_path, "information.json"), "w") as f:
-        json.dump(info, f, indent=4)
+        json.dump(info, f, indent=4, cls=NumpyEncoder)  # Use the encoder
 
     print(f"Saved grasp information to {save_path}")
     return "saved"
