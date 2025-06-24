@@ -14,9 +14,10 @@ from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
 from std_srvs.srv import Trigger, TriggerResponse
 import sensor_msgs.point_cloud2 as pc2
 from scipy.spatial.transform import Rotation as R
+import open3d as o3d
 
 # Setup AnyDexGrasp paths
-from anydexgrasp_config import setup_anydexgrasp_paths, get_default_model_paths
+from ros_ws.src.anydexgrasp_msgs.scripts.anydexgrasp_config import setup_anydexgrasp_paths, get_default_model_paths
 
 anydexgrasp_root = setup_anydexgrasp_paths()
 default_paths = get_default_model_paths(anydexgrasp_root)
@@ -31,6 +32,7 @@ from inference_v2.utils.network import (
 )
 from inference_v2.utils.data_processing import get_graspgroup_features, augment_data
 from inference_v2.utils.robot_utils import flip_ggarray,load_gripper_meshes,flip_z_ggarray
+from inference_v2.utils.visualization import visualize_grasp_proposals
 from inference_v2.main import get_all_grasp_proposals
 from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup,InspireHandRGrasp
 from graspnetAPI import GraspGroup, Grasp
@@ -51,15 +53,15 @@ class InspireGraspPlanningService:
     """ROS service for Inspire hand grasp planning from point clouds"""
 
     def __init__(self):
-        rospy.init_node("inspire_grasp_planning_service", anonymous=True)
+        rospy.init_node("inspire_grasp_planning_service", anonymous=False)
 
         # 加载配置
         self.config = GRIPPER_CONFIGS["inspire"]
-
+        print(rospy.get_param_names())
         # 获取参数
         self.checkpoint_path = rospy.get_param(
             "~checkpoint_path",
-            "logs/model/inspire_model/final_single_point/obj140/checkpoint.tar",
+            "logs/model/checkpoint.tar.18",
         )
         self.use_graspnet_v2 = rospy.get_param("~use_graspnet_v2", True)
         self.half_views = rospy.get_param("~half_views", False)
@@ -100,11 +102,11 @@ class InspireGraspPlanningService:
 
             # 创建配置对象
             class Args:
-                def __init__(self):
-                    self.use_graspnet_v2 = self.use_graspnet_v2
-                    self.half_views = self.half_views
+                def __init__(self, itself):
+                    self.use_graspnet_v2 = itself.use_graspnet_v2
+                    self.half_views = itself.half_views
 
-            args = Args()
+            args = Args(self)
             self.net = get_net(self.checkpoint_path, args)
             rospy.loginfo("Base GraspNet model loaded successfully")
 
@@ -119,6 +121,8 @@ class InspireGraspPlanningService:
 
         except Exception as e:
             rospy.logerr(f"Failed to initialize models: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def _handle_grasp_planning(self, req):
@@ -155,20 +159,22 @@ class InspireGraspPlanningService:
                 response.success = len(grasp_poses) > 0
                 response.message = f"Generated {len(grasp_poses)} grasp poses"
 
-                # 发布抓取姿态用于可视化
-                for i, grasp_pose in enumerate(grasp_poses):
-                    pose_stamped = PoseStamped()
-                    pose_stamped.header.stamp = rospy.Time.now()
-                    pose_stamped.header.frame_id = "camera_link"
-                    pose_stamped.pose = grasp_pose
-                    self.grasp_poses_pub.publish(pose_stamped)
-                    rospy.sleep(0.1)  # 延迟发布以便可视化
+            # 发布抓取姿态用于可视化
+            for i, grasp_pose in enumerate(grasp_poses):
+                pose_stamped = PoseStamped()
+                pose_stamped.header.stamp = rospy.Time.now()
+                pose_stamped.header.frame_id = "zed_frame"
+                pose_stamped.pose = grasp_pose.pose
+                self.grasp_poses_pub.publish(pose_stamped)
+                rospy.sleep(0.1)  # 延迟发布以便可视化
 
             rospy.loginfo(f"Successfully generated {len(grasp_poses)} grasp poses")
             return response
 
         except Exception as e:
             rospy.logerr(f"Error in grasp planning: {e}")
+            import traceback
+            traceback.print_exc()
 
             if hasattr(req, "pointcloud"):
                 response = GraspPlanningResponse()
@@ -212,6 +218,8 @@ class InspireGraspPlanningService:
         filtered_points = points[mask]
 
         if len(filtered_points) == 0:
+            rospy.logwarn(f"x_min:{min(points[:,0])}, x_max:{max(points[:,0])}, y_min:{min(points[:,1])}, y_max:{max(points[:,1])}, z_min:{min(points[:,2])}, z_max:{max(points[:,2])}")
+            np.savetxt('/data/shiqi/AnyDexGrasp/error_points.txt', points)
             raise ValueError("No points remain after workspace filtering")
 
         return filtered_points
@@ -261,7 +269,7 @@ class InspireGraspPlanningService:
         grasp_features = np.c_[grasp_features, if_flip]
 
         # 对于Inspire手，移除翻转的抓取（因为手不对称）
-        if config["name"] == "inspire":
+        if self.config["name"] == "inspire":
             valid_indices = ~np.array(if_flip)
             ggarray = ggarray[valid_indices]
             grasp_features = grasp_features[valid_indices]
@@ -353,13 +361,24 @@ class InspireGraspPlanningService:
         rospy.loginfo(f"{len(final_indices)} left after collision detection")
 
         gripper_gg_final:InspireHandRGraspGroup = coll_gg[final_indices]
-
+        coll_tf_gg_finnal = coll_tf_gg[final_indices]
+        
         # 6. 选择最佳抓取并转换为ROS消息
         sorted_indices = np.argsort(gripper_gg_final.scores)[::-1]
         top_indices = sorted_indices[: min(self.max_grasps, len(sorted_indices))]
-
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(points)
+        visualize_grasp_proposals(
+            cloud, 
+            coll_tf_gg_finnal[top_indices], 
+            gripper_gg_final[top_indices], 
+            self.config,
+            "Top 10 Grasp Proposals"
+        )
+        
         grasp_poses = []
         for idx in top_indices:
+            idx = idx.item()
             grasp = gripper_gg_final[idx]
             pose = self._convert_grasp_to_pose(grasp)
             grasp_poses.append(pose)
@@ -391,7 +410,7 @@ class InspireGraspPlanningService:
         )
         grasp_pose.pose = pose
         grasp_pose.score = grasp.score
-        grasp_pose.angles = grasp.angle.tolist()
+        grasp_pose.angles = np.array(grasp.angle,dtype=np.int32)
         return grasp_pose
 
     def run(self):

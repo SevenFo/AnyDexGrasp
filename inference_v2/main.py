@@ -95,30 +95,41 @@ def parse_args():
     )
     # 添加文件输入参数
     parser.add_argument(
-        "--depth_image", type=str, default="depth_2.png",
+        "--depth_image", type=str, default="depth.png",
         help="Depth file path (npy format) for no_robot mode"
     )
     parser.add_argument(
-        "--color_image", type=str, default="rgb_2.png",
+        "--color_image", type=str, default="rgb.png",
         help="Color file path (npy format) for no_robot mode"
+    )
+    parser.add_argument(
+        "--point_cloud", type=str, default="filtered.ply",
+        help="point_cloud path (npy format) for no_robot mode"
     )
     return parser.parse_args()
 
 
 def get_all_grasp_proposals(net, cfgs, config):
     """Augments point cloud and aggregates grasp proposals."""
+    pcd = None
+    depths = None
+    colors = None
     if cfgs.no_robot:
-        # 从文件加载深度和彩色图
-        depths = cv2.imread(cfgs.depth_image, cv2.IMREAD_ANYDEPTH)
-        if depths is None:
-            print("Error: Failed to load depth image")
-            return
-        
-        colors = None
-        if cfgs.color_image and os.path.exists(cfgs.color_image):
-            colors = cv2.imread(cfgs.color_image)
-            if colors is not None:
-                colors = cv2.cvtColor(colors, cv2.COLOR_BGR2RGB)
+        if cfgs.point_cloud and os.path.exists(cfgs.point_cloud):
+            pcd = o3d.io.read_point_cloud(cfgs.point_cloud)
+        else:  
+            # 从文件加载深度和彩色图
+            depths = cv2.imread(cfgs.depth_image, cv2.IMREAD_ANYDEPTH)
+            if depths is None:
+                print("Error: Failed to load depth image")
+                return
+            
+            colors = None
+            if cfgs.color_image and os.path.exists(cfgs.color_image):
+                colors = cv2.imread(cfgs.color_image)
+                if colors is not None:
+                    colors = cv2.cvtColor(colors, cv2.COLOR_BGR2RGB)
+            print("Get rgb and depth")
     else:
         # 从共享内存获取
         existing_shm_depth = shared_memory.SharedMemory(name="realsense_depth")
@@ -126,7 +137,10 @@ def get_all_grasp_proposals(net, cfgs, config):
         depths = get_depth(existing_shm_depth)
         colors = np.copy(np.ndarray((720, 1280, 3), dtype=np.float32, buffer=existing_shm_color.buf))
     
-    points, cloud = get_point_cloud(depths, colors, config)
+    if pcd is None:
+        points, cloud = get_point_cloud(depths, colors, config)
+    else:
+        points, cloud = np.asarray(pcd.points), pcd
     all_gg, all_grasp_features, all_sinput = None, None, []
 
     # Generate augmentations
@@ -422,6 +436,8 @@ if __name__ == "__main__":
         if not os.path.exists(args.depth_image):
             raise FileNotFoundError(f"Depth file not found: {args.depth_image}")
         if not os.path.exists(args.color_image):
+            import warnings
+            # warnings.warn(f"Color file not found: {args.color_image}")
             raise FileNotFoundError(f"Color file not found: {args.color_image}")
 
     start_time = time.time()

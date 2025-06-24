@@ -49,6 +49,10 @@ parser.add_argument('--depth_image', default='depth_2.png', help='Path to pre-re
 parser.add_argument('--color_image', default='rgb_2.png', help='Path to pre-recorded color image (PNG)')
 parser.add_argument('--use_graspnet_v2', action='store_true', help='Whether to use graspnet v2 format')
 parser.add_argument('--half_views', action='store_true', help='Use only half views in network.')
+parser.add_argument(
+    "--point_cloud", type=str, default="filtered.ply",
+    help="point_cloud path (npy format) for no_robot mode"
+)
 cfgs = parser.parse_args()
 
 MAX_GRASP_WIDTH = 0.1
@@ -329,33 +333,8 @@ def augment_data(flip=False):
     aug_mat = np.dot(trans_mat, np.dot(rot_mat, flip_mat).astype(np.float32)).astype(np.float32)
     return aug_mat
 
-def get_grasp(net, depths, color_image=None, augment_mat=np.eye(4), flip=False, voxel_size=0.005):
-    fx, fy = 919.835, 919.61
-    cx, cy = 631.119, 363.884
-    s = 1000.0
+def get_grasp(net, points, cloud, augment_mat=np.eye(4), flip=False, voxel_size=0.005):
 
-    xmap, ymap = np.arange(depths.shape[1]), np.arange(depths.shape[0])
-    xmap, ymap = np.meshgrid(xmap, ymap)
-
-    points_z = depths / s
-    points_x = (xmap - cx) / fx * points_z
-    points_y = (ymap - cy) / fy * points_z
-
-    mask = (points_z > 0.35) & (points_z < 0.68)   
-    points = np.stack([points_x, points_y, points_z], axis=-1)
-    points = points[mask].astype(np.float32)
-
-    if color_image is not None:
-        if color_image.dtype == np.uint8:
-            colors = color_image[mask].astype(np.float32) / 255.0 
-        else:
-            colors = color_image[mask].astype(np.float32)
-
-    cloud = None
-    if color_image is not None:
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector(points)
-        cloud.colors = o3d.utility.Vector3dVector(colors)
 
     points = transform_point_cloud(points, augment_mat).astype(np.float32)
     points = torch.from_numpy(points)
@@ -394,7 +373,7 @@ def get_grasp(net, depths, color_image=None, augment_mat=np.eye(4), flip=False, 
     preds[:, 3:12] = pose_rotation.view((-1, 9))
 
     mask = (preds[:,9] > 0.92) & (preds[:,1] < MAX_GRASP_WIDTH) & (preds[:,1] > MIN_GRASP_WIDTH)
-    workspace_mask = (preds[:,12] > -0.25) & (preds[:,12] < 0.25) & (preds[:,13] > -0.205) & (preds[:,13] < 0.03)
+    workspace_mask = (preds[:,12] > -0.25) & (preds[:,12] < 0.25) & (preds[:,13] > -0.205) & (preds[:,13] < 0.03) | (torch.ones_like(preds[:,13],dtype=torch.bool, device=preds.device))
     preds = preds[workspace_mask & mask]
     grasp_features = grasp_features[0][workspace_mask & mask]
     if len(preds) == 0:
@@ -408,7 +387,7 @@ def get_grasp(net, depths, color_image=None, augment_mat=np.eye(4), flip=False, 
 
     return ggarray, cloud, points, grasp_features, [sinput]
 
-def get_ggarray_features(net, depths, color_image=None):
+def get_ggarray_features(net, points, cloud):
     augment_mat1 = np.eye(4)
     augment_mats = []
     
@@ -421,7 +400,7 @@ def get_ggarray_features(net, depths, color_image=None):
 
     # 第一次调用 - 获取点云和抓取
     ggarray, cloud, points_down, grasp_features, sinput = get_grasp(
-        net, depths, color_image, augment_mat=augment_mat1
+        net, points,cloud, augment_mat=augment_mat1
     )
     
     # 保存第一次调用的点云（带颜色）
@@ -431,11 +410,11 @@ def get_ggarray_features(net, depths, color_image=None):
     for i in range(POINTCLOUD_AUGMENT_NUM):
         if i % 2 == 0:
             ggarray2, _, _, grasp_features2, sinput2 = get_grasp(
-                net, depths, color_image, augment_mat=augment_mats[i]
+                net, points, cloud, augment_mat=augment_mats[i]
             )
         else:
             ggarray2, _, _, grasp_features2, sinput2 = get_grasp(
-                net, depths, color_image, augment_mat=augment_mats[i], flip=True
+                net, points, cloud, augment_mat=augment_mats[i], flip=True
             )
             
         if ggarray2 is None:
@@ -541,26 +520,59 @@ def process_and_visualize():
     
     # Load meshes for collision detection
     meshes_pcls = load_meshes_pointcloud(cfgs.inspire_mesh_json_path)
-    
-    # Load depth and color images
-    if cfgs.depth_image is None or not os.path.exists(cfgs.depth_image):
-        print("Error: Depth image path is invalid")
-        return
-    
-    depths = cv2.imread(cfgs.depth_image, cv2.IMREAD_ANYDEPTH)
-    if depths is None:
-        print("Error: Failed to load depth image")
-        return
-    
+    pcd = None
+    depths = None
     color_image = None
-    if cfgs.color_image and os.path.exists(cfgs.color_image):
-        color_image = cv2.imread(cfgs.color_image)
-        if color_image is not None:
-            color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+    if cfgs.point_cloud and os.path.exists(cfgs.point_cloud):
+        pcd = o3d.io.read_point_cloud(cfgs.point_cloud)
+        points, cloud = np.asarray(pcd.points), pcd
+    else:
+        # Load depth and color images
+        if cfgs.depth_image is None or not os.path.exists(cfgs.depth_image):
+            print("Error: Depth image path is invalid")
+            return
+        
+        depths = cv2.imread(cfgs.depth_image, cv2.IMREAD_ANYDEPTH)
+        if depths is None:
+            print("Error: Failed to load depth image")
+            return
     
+        if cfgs.color_image and os.path.exists(cfgs.color_image):
+            color_image = cv2.imread(cfgs.color_image)
+            if color_image is not None:
+                color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+    
+        fx, fy = 919.835, 919.61
+        cx, cy = 631.119, 363.884
+        s = 1000.0
+
+        xmap, ymap = np.arange(depths.shape[1]), np.arange(depths.shape[0])
+        xmap, ymap = np.meshgrid(xmap, ymap)
+
+        points_z = depths / s
+        points_x = (xmap - cx) / fx * points_z
+        points_y = (ymap - cy) / fy * points_z
+
+        mask = (points_z > 0.35) & (points_z < 0.68)   
+        points = np.stack([points_x, points_y, points_z], axis=-1)
+        points = points[mask].astype(np.float32)
+
+        if color_image is not None:
+            if color_image.dtype == np.uint8:
+                colors = color_image[mask].astype(np.float32) / 255.0 
+            else:
+                colors = color_image[mask].astype(np.float32)
+
+        cloud = None
+        if color_image is not None:
+            cloud = o3d.geometry.PointCloud()
+            cloud.points = o3d.utility.Vector3dVector(points)
+            cloud.colors = o3d.utility.Vector3dVector(colors)
+        
+        
     # Process depth image
     t1 = time.time()
-    ggarray, cloud, points_down, grasp_features, sinput = get_ggarray_features(net, depths, color_image)
+    ggarray, cloud, points_down, grasp_features, sinput = get_ggarray_features(net, points, cloud)
     t3 = time.time()
     print(f'Net Time:{t3 - t1}')
     # 检查点云是否为空
@@ -631,12 +643,12 @@ def process_and_visualize():
     InspireHandR_ggarray.scores = scores
     InspireHandR_ggarray.depths = InspireHandR_ggarray.depths + inspire_depth + INSPIREHANDR_DEFAULT_DEPTH
     InspireHandR_ggarray_source = copy.deepcopy(InspireHandR_ggarray)
-    
+    two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids_source
     # Filter by z-axis
-    index_filter_by_z_axis = InspireHandR_ggarray.filter_grasp_group_by_z_axis(0.4)
-    two_fingers_ggarray = two_fingers_ggarray[index_filter_by_z_axis]
-    two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids_source[index_filter_by_z_axis]
-    grasp_features = grasp_features[index_filter_by_z_axis]
+    # index_filter_by_z_axis = InspireHandR_ggarray.filter_grasp_group_by_z_axis(0.4)
+    # two_fingers_ggarray = two_fingers_ggarray[index_filter_by_z_axis]
+    # two_fingers_ggarray_object_ids = two_fingers_ggarray_object_ids_source[index_filter_by_z_axis]
+    # grasp_features = grasp_features[index_filter_by_z_axis]
     
     if len(InspireHandR_ggarray) == 0:
         print('No grasp detected after filter')
@@ -675,15 +687,15 @@ def process_and_visualize():
         return
     
     # Sort post-collision grasps
-    index_score_post = np.argsort(InspireHandR_ggarray_post.scores)[::-1][:80]
+    index_score_post = np.argsort(InspireHandR_ggarray_post.scores)[::-1][0:1]
     InspireHandR_ggarray_post = InspireHandR_ggarray_post[index_score_post]
     two_fingers_ggarray_post = two_fingers_ggarray_post[index_score_post]
     
     # Visualize results
     print("Visualizing pre-collision grasps...")
-    # index_score_post = np.argsort(InspireHandR_ggarray.scores)[::-1][:20]
-    # InspireHandR_ggarray = InspireHandR_ggarray[index_score_post]
-    # two_fingers_ggarray = two_fingers_ggarray[index_score_post]
+    index_score_post = np.argsort(InspireHandR_ggarray.scores)[::-1][:10]
+    InspireHandR_ggarray = InspireHandR_ggarray[index_score_post]
+    two_fingers_ggarray = two_fingers_ggarray[index_score_post]
     visualize_grasp_proposals(cloud, two_fingers_ggarray, InspireHandR_ggarray, "Pre-Collision Grasp Proposals")
     
     print("Visualizing post-collision grasps...")
