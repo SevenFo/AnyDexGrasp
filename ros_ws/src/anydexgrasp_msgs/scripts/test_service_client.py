@@ -16,6 +16,7 @@ from sensor_msgs.msg import PointCloud2, CameraInfo, Image
 from geometry_msgs.msg import Point, PoseStamped, Pose
 import sensor_msgs.point_cloud2 as pc2
 from cv_bridge import CvBridge
+from scipy.spatial.transform import Rotation as R
 import tf2_ros
 import tf2_geometry_msgs
 import tf2_sensor_msgs
@@ -296,7 +297,18 @@ class GraspPlanningClient:
                         pose_stamped = self.transform_pose(pose_stamped, trans)
                         pose = pose_stamped.pose
                         rospy.loginfo(f"  TransPosition: [x: {pose.position.x:.3f}, y: {pose.position.y:.3f}, z: {pose.position.z:.3f}]")
-                        rospy.loginfo(f"  TransPosition: [x: {pose.orientation.x:.3f}, y: {pose.orientation.y:.3f}, z: {pose.orientation.z:.3f}], w: {pose.orientation.w:.3f}]")
+                        rospy.loginfo(f"  TransPosition (adg convension): [x: {pose.orientation.x:.3f}, y: {pose.orientation.y:.3f}, z: {pose.orientation.z:.3f}], w: {pose.orientation.w:.3f}]")
+                        # trans from adg convension to galaxea convension
+                        r = R.from_quat([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+                        trans = R.from_matrix([[0,-1,0],[0,0,1],[-1,0,0]])
+                        trans_r =  r * trans.inv()
+                        pose_stamped.pose.orientation.x = trans_r.as_quat()[0]
+                        pose_stamped.pose.orientation.y = trans_r.as_quat()[1]
+                        pose_stamped.pose.orientation.z = trans_r.as_quat()[2]
+                        pose_stamped.pose.orientation.w = trans_r.as_quat()[3]
+                        pose = pose_stamped.pose
+                        rospy.loginfo(f"  TransPosition: [x: {pose.position.x:.3f}, y: {pose.position.y:.3f}, z: {pose.position.z:.3f}]")
+                        rospy.loginfo(f"  TransPosition (galaxea convension): [x: {pose.orientation.x:.3f}, y: {pose.orientation.y:.3f}, z: {pose.orientation.z:.3f}], w: {pose.orientation.w:.3f}]")
                         confirm = input("Press Y to exected")
                         self.grasp_poses_pub.publish(pose_stamped)
                         rospy.sleep(0.1)
