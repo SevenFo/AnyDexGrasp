@@ -82,3 +82,40 @@ def batch_viewpoint_params_to_matrix(batch_towards, batch_angle):
     R2 = np.stack([axis_x, axis_y, axis_z], axis=-1)
     matrix = np.matmul(R2, R1)
     return matrix.astype(np.float32)
+
+def compute_angle_between_axes(rot_matrices, axis_index, target_direction):
+    """
+    计算旋转矩阵的指定局部轴与目标方向向量之间的夹角（弧度）
+
+    参数:
+        rot_matrices (np.ndarray): 旋转矩阵数组，形状为(N, 3, 3)
+        axis_index (int): 要比较的局部轴索引 (0=x, 1=y, 2=z)
+        target_direction (np.ndarray): 目标方向向量，形状为(3,)
+    
+    返回:
+        angles (np.ndarray): 每个旋转矩阵对应的角度误差（弧度），形状为(N,)
+    
+    异常:
+        ValueError: 如果目标方向是零向量或axis_index无效
+    """
+    # 验证轴索引
+    if axis_index not in [0, 1, 2]:
+        raise ValueError("axis_index must be 0 (x), 1 (y), or 2 (z)")
+    
+    # 提取指定局部轴
+    local_axes = rot_matrices[:, :, axis_index]  # (N, 3)
+
+    # 归一化目标方向
+    target_norm = np.linalg.norm(target_direction)
+    if target_norm < 1e-6:
+        raise ValueError("Target direction vector is near zero!")
+    target_dir_norm = target_direction / target_norm
+
+    # 计算点积 (cosθ值)
+    dots = np.sum(local_axes * target_dir_norm, axis=1)  # (N,)
+
+    # 防止点积超出[-1,1]范围然后计算角度
+    clipped_dots = np.clip(dots, -1.0, 1.0)
+    angles = np.arccos(clipped_dots)
+
+    return angles

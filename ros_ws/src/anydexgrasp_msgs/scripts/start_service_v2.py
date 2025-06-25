@@ -27,7 +27,8 @@ from inference_v3.main import get_ggarray_features # Using the main function for
 from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup, InspireHandRGrasp
 from graspnetAPI import GraspGroup, Grasp
 from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
-
+from models.inspire_hand_grasp import InspireHandRGraspGroupEnhance
+from models.common_grasp import GraspGroupEnhance
 # Custom service messages
 try:
     from anydexgrasp_msgs.srv import GraspPlanning, GraspPlanningResponse
@@ -144,7 +145,7 @@ class InspireGraspPlanningService:
                 pose_stamped.header.frame_id = self.frame_id
                 pose_stamped.pose = grasp_pose.pose
                 self.grasp_poses_pub.publish(pose_stamped)
-                # rospy.sleep(0.1)
+                rospy.sleep(0.1)
 
             rospy.loginfo(f"Successfully generated and published {len(grasp_poses)} grasp poses.")
             return response
@@ -240,8 +241,15 @@ class InspireGraspPlanningService:
         grasp_features = grasp_features[source_index]
         rospy.loginfo(f"Kept {len(ggarray)} proposals after flipping and sorting.")
         
-        import pdb
-        pdb.set_trace()
+        # filter by grasp direction
+        ggarray_group = GraspGroupEnhance(ggarray)
+        ggarray_group, mask = ggarray_group.filter_grasp_group_by_grasp_direction()
+        ggarray = ggarray[mask]
+        grasp_features = grasp_features[mask]
+        rospy.loginfo(f"Kept {len(ggarray)} proposals after direction filtering.")
+
+        # import pdb
+        # pdb.set_trace()
 
         # 3. Predict multi-finger grasp types and depths
         rospy.loginfo("Step 3: Predicting multi-finger grasp type and depth...")
@@ -251,6 +259,21 @@ class InspireGraspPlanningService:
                                    num_inspire_depth=self.cfgs.NUM_OF_INSPIRE_DEPTH,
                                    num_inspire_type=self.cfgs.NUM_OF_INSPIRE_TYPE)
         
+        # Filter by grasp direction for inspire hand
+        inspire_grasp_group = InspireHandRGraspGroupEnhance()
+        inspire_grasp_group.set_grasp_min_width(self.cfgs.MIN_GRASP_WIDTH)
+        inspire_grasp_group.from_graspgroup(GraspGroup(ggarray), inspire_type, self.cfgs.inspire_mesh_json_path)
+        inspire_grasp_group.scores = scores
+        inspire_grasp_group.depths += inspire_depth + self.cfgs.INSPIREHANDR_DEFAULT_DEPTH
+        _, mask = inspire_grasp_group.filter_grasp_group_by_grasp_direction()
+        ggarray, grasp_features, inspire_depth, inspire_type, scores = (
+            ggarray[mask], grasp_features[mask], inspire_depth[mask], inspire_type[mask], scores[mask]
+        )
+        if len(ggarray) == 0:
+            rospy.logwarn(f"No grasps passed direction filtering.")
+            return []
+        rospy.loginfo(f"{len(ggarray)} grasps remain after direction filtering.")
+
         # Filter by score threshold
         mask = (scores > self.score_threshold)
         ggarray, grasp_features, inspire_depth, inspire_type, scores = (
@@ -308,15 +331,15 @@ class InspireGraspPlanningService:
         # workspace_filter
         translations = gripper_gg_final.translations
         x_min, x_max, y_min, y_max, z_min, z_max = self.workspace_mask
-        x_cond = (translations[:, 0] >= (x_min)) & (translations[:, 0] <= (x_max))
-        y_cond = (translations[:, 1] >= (y_min)) & (translations[:, 1] <= (y_max))
+        x_cond = (translations[:, 0] >= (x_min+0.1)) & (translations[:, 0] <= (x_max-0.1))
+        y_cond = (translations[:, 1] >= (y_min+0.1)) & (translations[:, 1] <= (y_max-0.1))
         # z_cond = (translations[:, 2] >= z_min)# & (translations[:, 2] <= z_max)
         # 组合所有条件
         valid_mask = x_cond & y_cond
         # 获取有效索引
         ws_mask = np.where(valid_mask)[0].tolist()
-        # gripper_gg_final = gripper_gg_final[ws_mask]
-        # two_fingers_gg_final = two_fingers_gg_final[ws_mask]
+        gripper_gg_final = gripper_gg_final[ws_mask]
+        two_fingers_gg_final = two_fingers_gg_final[ws_mask]
         
         if len(gripper_gg_final) == 0:
             rospy.logwarn("No grasps remaining after ws detection.")
