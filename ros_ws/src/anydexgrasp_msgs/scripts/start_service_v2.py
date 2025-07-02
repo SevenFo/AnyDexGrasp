@@ -24,7 +24,7 @@ from inference_v3.utils.grasp_utils import flip_ggarray, get_graspgroup_features
 from inference_v3.utils.visualization_utils import visualize_grasp_proposals
 from inference_v3.main import get_ggarray_features # Using the main function for convenience
 
-from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup, InspireHandRGrasp
+from ur_toolbox.robot.Inspire.InspireHandR_grasp import InspireHandRGraspGroup, InspireHandRGrasp, grasp_types
 from graspnetAPI import GraspGroup, Grasp
 from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 from models.inspire_hand_grasp import InspireHandRGraspGroupEnhance
@@ -37,9 +37,6 @@ try:
 except ImportError:
     rospy.logwarn("Custom message types 'anydexgrasp_msgs' not found. Using standard ROS messages.")
     CUSTOM_MSGS_AVAILABLE = False
-    # Define placeholder for type hinting if msgs are not available
-    class GraspPose: pass
-
 
 class InspireGraspPlanningService:
     """ROS service for Inspire hand grasp planning from point clouds (V3 Version)"""
@@ -241,12 +238,12 @@ class InspireGraspPlanningService:
         grasp_features = grasp_features[source_index]
         rospy.loginfo(f"Kept {len(ggarray)} proposals after flipping and sorting.")
         
-        # filter by grasp direction
-        ggarray_group = GraspGroupEnhance(ggarray)
-        ggarray_group, mask = ggarray_group.filter_grasp_group_by_grasp_direction()
-        ggarray = ggarray[mask]
-        grasp_features = grasp_features[mask]
-        rospy.loginfo(f"Kept {len(ggarray)} proposals after direction filtering.")
+        # # filter by grasp direction
+        # ggarray_group = GraspGroupEnhance(ggarray)
+        # ggarray_group, mask = ggarray_group.filter_grasp_group_by_grasp_direction()
+        # ggarray = ggarray[mask]
+        # grasp_features = grasp_features[mask]
+        # rospy.loginfo(f"Kept {len(ggarray)} proposals after direction filtering.")
 
         # import pdb
         # pdb.set_trace()
@@ -338,8 +335,8 @@ class InspireGraspPlanningService:
         valid_mask = x_cond & y_cond
         # 获取有效索引
         ws_mask = np.where(valid_mask)[0].tolist()
-        gripper_gg_final = gripper_gg_final[ws_mask]
-        two_fingers_gg_final = two_fingers_gg_final[ws_mask]
+        # gripper_gg_final = gripper_gg_final[ws_mask]
+        # two_fingers_gg_final = two_fingers_gg_final[ws_mask]
         
         if len(gripper_gg_final) == 0:
             rospy.logwarn("No grasps remaining after ws detection.")
@@ -348,12 +345,35 @@ class InspireGraspPlanningService:
         
         # 6. Final Selection and Conversion
         rospy.loginfo("Step 6: Selecting top grasps and converting to ROS format.")
-        index_score_post = np.argsort(gripper_gg_final.scores)[::-1][:self.max_grasps]#[0:1]
+        index_score_post = np.argsort(gripper_gg_final.scores)[::-1][:self.max_grasps][0:1]
         top_grasps = gripper_gg_final[index_score_post]
         top_tf_grasps = two_fingers_gg_final[index_score_post]
 
         # Optional: Visualize final grasp proposals in Open3D
         if self.cfgs.visualize_final_grasps: # Add this to your config if you want
+            for _idx in range(len(top_grasps)):
+                rospy.loginfo(f"\nGrasp {_idx+1}:")
+                grasp = top_grasps[_idx]
+                tf_grasp = top_tf_grasps[_idx]
+                rotation_matrix = grasp.rotation_matrix.reshape(3, 3)
+                r = R.from_matrix(rotation_matrix)
+                rospy.loginfo(f"  Score: {grasp.score:.3f}")
+                rospy.loginfo(f"  Position: [x: {grasp.translation[0]:.3f}, y: {grasp.translation[1]:.3f}, z: {grasp.translation[2]:.3f}]")
+                rospy.loginfo(f"  Orientation: [x: {r.as_euler('XYZ',degrees=True)[0]:.3f}, y: {r.as_euler('XYZ',degrees=True)[1]:.3f}, z: {r.as_euler('XYZ',degrees=True)[2]:.3f}")
+                rospy.loginfo(f"  Width: {grasp.width:.3f}m")
+                rospy.loginfo(f"  Depth: {grasp.depth:.3f}m")
+                rospy.loginfo(f"  Grasp Type: {grasp.grasp_type}")
+                rospy.loginfo(f"  Gripper: {grasp_types[str(int(grasp.grasp_type))]}")
+                rospy.loginfo(f"  Joint Angles: {list(grasp.angle)}")
+                rospy.loginfo(f"  === two finger ===")
+                grasp = tf_grasp
+                rotation_matrix = grasp.rotation_matrix.reshape(3, 3)
+                r = R.from_matrix(rotation_matrix)
+                rospy.loginfo(f"  Score: {grasp.score:.3f}")
+                rospy.loginfo(f"  Position: [x: {grasp.translation[0]:.3f}, y: {grasp.translation[1]:.3f}, z: {grasp.translation[2]:.3f}]")
+                rospy.loginfo(f"  Orientation: [x: {r.as_euler('XYZ',degrees=True)[0]:.3f}, y: {r.as_euler('XYZ',degrees=True)[1]:.3f}, z: {r.as_euler('XYZ',degrees=True)[2]:.3f}")
+                rospy.loginfo(f"  Width: {grasp.width:.3f}m")
+                rospy.loginfo(f"  Depth: {grasp.depth:.3f}m")
             vis_cloud = o3d.geometry.PointCloud()
             vis_cloud.points = o3d.utility.Vector3dVector(points)
             visualize_grasp_proposals(vis_cloud, top_tf_grasps, top_grasps, self.cfgs, "Final Top Grasp Proposals", "/data/shiqi/AnyDexGrasp/grasp_result.ply")
@@ -389,6 +409,8 @@ class InspireGraspPlanningService:
         grasp_pose_msg.score = grasp.score
         # Ensure angles are in the correct format
         grasp_pose_msg.angles = np.array(grasp.angle, dtype=np.int32)
+        grasp_pose_msg.grasp_type = int(grasp.grasp_type)
+        grasp_pose_msg.width = grasp.width
         
         return grasp_pose_msg
 
