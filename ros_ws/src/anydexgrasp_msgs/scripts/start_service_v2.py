@@ -3,7 +3,7 @@
 """ 
 Provides a ROS service to convert point clouds to Inspire hand grasp poses using AnyDexGrasp V3.
 """
-from typing import Union
+from typing import Union, Tuple, List
 import rospy
 import numpy as np
 import sys
@@ -30,13 +30,9 @@ from adg_utils.collision_detector import ModelFreeCollisionDetectorMultifinger
 from models.inspire_hand_grasp import InspireHandRGraspGroupEnhance
 from models.common_grasp import GraspGroupEnhance
 # Custom service messages
-try:
-    from anydexgrasp_msgs.srv import GraspPlanning, GraspPlanningResponse
-    from anydexgrasp_msgs.msg import GraspPose
-    CUSTOM_MSGS_AVAILABLE = True
-except ImportError:
-    rospy.logwarn("Custom message types 'anydexgrasp_msgs' not found. Using standard ROS messages.")
-    CUSTOM_MSGS_AVAILABLE = False
+from anydexgrasp_msgs.srv import GraspPlanning, GraspPlanningResponse
+from anydexgrasp_msgs.msg import GraspPose
+
 
 class InspireGraspPlanningService:
     """ROS service for Inspire hand grasp planning from point clouds (V3 Version)"""
@@ -58,7 +54,7 @@ class InspireGraspPlanningService:
         self.max_grasps = rospy.get_param("~max_grasps", 10)
         
         # Workspace filter parameters (you can also add these to your V3 config file)
-        self.workspace_mask = [
+        self.workspace_mask:List[float] = [ # type: ignore
             rospy.get_param("~workspace/x_min", 0.57), rospy.get_param("~workspace/x_max", 1.0),
             rospy.get_param("~workspace/y_min", -0.2), rospy.get_param("~workspace/y_max", 0.2),
             rospy.get_param("~workspace/z_min", -0.6-1),  rospy.get_param("~workspace/z_max", -0.6)
@@ -85,11 +81,7 @@ class InspireGraspPlanningService:
 
     def _get_service_type(self):
         """Gets the service type, falling back to Trigger if custom messages are unavailable"""
-        if CUSTOM_MSGS_AVAILABLE:
-            return GraspPlanning
-        else:
-            rospy.logwarn("Using Trigger service as fallback.")
-            return Trigger
+        return GraspPlanning
 
     def _initialize_models(self):
         """Initializes the neural network and gripper models using V3 functions."""
@@ -117,23 +109,21 @@ class InspireGraspPlanningService:
             rospy.loginfo("Received grasp planning request.")
             
             # Extract point cloud from the request
-            if CUSTOM_MSGS_AVAILABLE and hasattr(req, "pointcloud"):
+            if hasattr(req, "pointcloud"):
                 points = self._extract_points_from_pointcloud2(req.pointcloud)
                 self.frame_id = req.pointcloud.header.frame_id
             else:
-                rospy.loginfo("Waiting for point cloud on /camera/depth/color/points...")
-                pointcloud_msg = rospy.wait_for_message("/camera/depth/color/points", PointCloud2, timeout=10.0)
-                points = self._extract_points_from_pointcloud2(pointcloud_msg)
-                self.frame_id = pointcloud_msg.header.frame_id
+                raise ValueError("req has no pointcloud attr")
 
             rospy.loginfo(f"Received and filtered point cloud with {len(points)} points.")
 
             # Execute grasp planning
-            grasp_poses = self._plan_grasps(points)
-            for grasp_pose in grasp_poses:
+            grasp_poses, tf_grasp_poses = self._plan_grasps(points)
+            for grasp_pose, tf_grasp_pose in zip(grasp_poses, tf_grasp_poses):
                 grasp_pose.header.frame_id = self.frame_id
+                tf_grasp_pose.header.frame_id = self.frame_id
             # Create and return the response
-            response = self._create_response(req, grasp_poses)
+            response = self._create_response(req, grasp_poses, tf_grasp_poses)
             
             # Publish poses for visualization in RViz
             for grasp_pose in grasp_poses:
@@ -153,30 +143,22 @@ class InspireGraspPlanningService:
             traceback.print_exc()
             return self._create_error_response(req, str(e))
 
-    def _create_response(self, req, grasp_poses):
+    def _create_response(self, req, grasp_poses, tf_grasp_poses):
         """Creates a success response message."""
-        if CUSTOM_MSGS_AVAILABLE and hasattr(req, "pointcloud"):
-            response = GraspPlanningResponse()
-            response.success = len(grasp_poses) > 0
-            response.message = f"Generated {len(grasp_poses)} grasp poses."
-            response.grasp_poses = grasp_poses
-        else:
-            response = TriggerResponse()
-            response.success = len(grasp_poses) > 0
-            response.message = f"Generated {len(grasp_poses)} grasp poses."
+        response = GraspPlanningResponse()
+        response.success = len(grasp_poses) > 0 and len(tf_grasp_poses) > 0 and len(grasp_poses) == len(tf_grasp_poses)
+        response.message = f"Generated {len(grasp_poses)} grasp poses."
+        response.grasp_poses = grasp_poses
+        response.grasp_poses=  tf_grasp_poses
         return response
 
     def _create_error_response(self, req, error_message):
         """Creates an error response message."""
-        if CUSTOM_MSGS_AVAILABLE and hasattr(req, "pointcloud"):
-            response = GraspPlanningResponse()
-            response.success = False
-            response.message = f"Error: {error_message}"
-            response.grasp_poses = []
-        else:
-            response = TriggerResponse()
-            response.success = False
-            response.message = f"Error: {error_message}"
+        response = GraspPlanningResponse()
+        response.success = False
+        response.message = f"Error: {error_message}"
+        response.grasp_poses = []
+        response.tf_grasp_poses = []
         return response
 
     def _extract_points_from_pointcloud2(self, pointcloud_msg):
@@ -209,7 +191,7 @@ class InspireGraspPlanningService:
             
         return filtered_points
 
-    def _plan_grasps(self, points: np.ndarray):
+    def _plan_grasps(self, points: np.ndarray) -> Tuple[List[GraspPose], List[GraspPose]]:
         """Executes the core grasp planning pipeline using V3 functions."""
         
         # 1. Generate grasp proposals with data augmentation
@@ -217,11 +199,12 @@ class InspireGraspPlanningService:
         ggarray, cloud, points_down, grasp_features, sinput = get_ggarray_features(self.net, points, None)
         if ggarray is None:
             rospy.logwarn("No grasp proposals generated from the network.")
-            return []
+            return [],[]
         rospy.loginfo(f"Generated {len(ggarray)} raw grasp proposals.")
 
         # 2. Process proposals: convert to numpy, flip, filter, and sort
         rospy.loginfo("Step 2: Processing and filtering raw proposals...")
+        assert grasp_features is not None
         ggarray = ggarray.cpu().numpy()
         grasp_features = grasp_features.cpu().numpy()
 
@@ -268,7 +251,7 @@ class InspireGraspPlanningService:
         )
         if len(ggarray) == 0:
             rospy.logwarn(f"No grasps passed direction filtering.")
-            return []
+            return [],[]
         rospy.loginfo(f"{len(ggarray)} grasps remain after direction filtering.")
 
         # Filter by score threshold
@@ -278,7 +261,7 @@ class InspireGraspPlanningService:
         )
         if len(ggarray) == 0:
             rospy.logwarn(f"No grasps passed the score threshold of {self.score_threshold}.")
-            return []
+            return [],[]
         rospy.loginfo(f"{len(ggarray)} grasps remain after score filtering.")
 
         # 4. Create GraspGroup objects and refine poses
@@ -294,10 +277,11 @@ class InspireGraspPlanningService:
         index_type = select_grasp_type(gripper_gg, self.cfgs.NUM_OF_INSPIRE_TYPE)
         gripper_gg = gripper_gg[index_type]
         two_fingers_gg = two_fingers_gg[index_type]
+        assert isinstance(gripper_gg, InspireHandRGraspGroup) and isinstance(two_fingers_gg, GraspGroup)
         
         if len(gripper_gg) == 0:
             rospy.logwarn("No grasps left after type selection.")
-            return []
+            return [],[]
         rospy.loginfo(f"{len(gripper_gg)} grasps remain after type selection.")
         
         # Sort again by final scores
@@ -322,7 +306,7 @@ class InspireGraspPlanningService:
 
         if len(gripper_gg_final) == 0:
             rospy.logwarn("No grasps remaining after collision detection.")
-            return []
+            return [],[]
         rospy.loginfo(f"{len(gripper_gg_final)} grasps remain after collision detection.")
         
         # workspace_filter
@@ -340,7 +324,7 @@ class InspireGraspPlanningService:
         
         if len(gripper_gg_final) == 0:
             rospy.logwarn("No grasps remaining after ws detection.")
-            return []
+            return [],[]
         rospy.loginfo(f"{len(gripper_gg_final)} grasps remain after ws detection.")
         
         # 6. Final Selection and Conversion
@@ -379,8 +363,8 @@ class InspireGraspPlanningService:
             visualize_grasp_proposals(vis_cloud, top_tf_grasps, top_grasps, self.cfgs, "Final Top Grasp Proposals", "/data/shiqi/AnyDexGrasp/grasp_result.ply")
 
         grasp_poses = [self._convert_grasp_to_pose(g) for g in top_grasps]
-        
-        return grasp_poses
+        tf_grasp_poses = [self._convert_grasp_to_pose(tfg) for tfg in top_tf_grasps]
+        return grasp_poses, tf_grasp_poses
 
     def _convert_grasp_to_pose(self, grasp: Union[InspireHandRGrasp, Grasp]) -> GraspPose:
         """Converts an internal grasp object to a ROS GraspPose message."""
@@ -400,16 +384,12 @@ class InspireGraspPlanningService:
             x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3])
         )
 
-        if not CUSTOM_MSGS_AVAILABLE:
-            return pose_msg
-
-        # If custom messages are available, populate the full message
         grasp_pose_msg = GraspPose()
         grasp_pose_msg.pose = pose_msg
         grasp_pose_msg.score = grasp.score
         # Ensure angles are in the correct format
-        grasp_pose_msg.angles = np.array(grasp.angle, dtype=np.int32)
-        grasp_pose_msg.grasp_type = int(grasp.grasp_type)
+        grasp_pose_msg.angles = np.array(grasp.angle, dtype=np.int32) if hasattr(grasp, "angle") else []
+        grasp_pose_msg.grasp_type = int(grasp.grasp_type) if hasattr(grasp, "grasp_type") else 0
         grasp_pose_msg.width = grasp.width
         
         return grasp_pose_msg
