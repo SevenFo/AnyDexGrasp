@@ -149,7 +149,7 @@ class InspireGraspPlanningService:
         response.success = len(grasp_poses) > 0 and len(tf_grasp_poses) > 0 and len(grasp_poses) == len(tf_grasp_poses)
         response.message = f"Generated {len(grasp_poses)} grasp poses."
         response.grasp_poses = grasp_poses
-        response.grasp_poses=  tf_grasp_poses
+        response.tf_grasp_poses=  tf_grasp_poses
         return response
 
     def _create_error_response(self, req, error_message):
@@ -391,6 +391,7 @@ class InspireGraspPlanningService:
         grasp_pose_msg.angles = np.array(grasp.angle, dtype=np.int32) if hasattr(grasp, "angle") else []
         grasp_pose_msg.grasp_type = int(grasp.grasp_type) if hasattr(grasp, "grasp_type") else 0
         grasp_pose_msg.width = grasp.width
+        grasp_pose_msg.depth = grasp.depth
         
         return grasp_pose_msg
 
